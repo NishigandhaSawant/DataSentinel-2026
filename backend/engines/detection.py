@@ -7,7 +7,9 @@ import uuid
 import polars as pl
 import pandas as pd
 import numpy as np
+import json
 from sklearn.ensemble import IsolationForest, HistGradientBoostingClassifier
+import shap
 
 from utils import _session_dir, logger
 from engines.nlp_bridge import process_text_anomalies
@@ -137,13 +139,18 @@ def process_and_detect(
         freq_encoding = pandas_df[col].value_counts(normalize=True)
         encoded_df[col + "_freq"] = pandas_df[col].map(freq_encoding).fillna(0)
 
-    # ---------------------------------------------------------
-    # THE AI DETECTION ENGINE (Z-Score Thresholding)
-    # ---------------------------------------------------------
+    # --- THE AI DETECTION ENGINE (Z-Score Thresholding) ---
     recommendation = "Isolation Forest (Z-Score Scaled)"
 
-    model = IsolationForest(n_estimators=200, random_state=42)
-    model.fit(encoded_df)
+    # OPTIMIZATION: Subsample for extremely fast training on huge datasets
+    max_if_samples = 50000
+    if len(encoded_df) > max_if_samples:
+        train_df = encoded_df.sample(n=max_if_samples, random_state=42)
+    else:
+        train_df = encoded_df
+
+    model = IsolationForest(n_estimators=100, n_jobs=-1, random_state=42)
+    model.fit(train_df)
 
     raw_scores = model.decision_function(encoded_df)
     inverted_scores = -raw_scores
@@ -156,14 +163,57 @@ def process_and_detect(
 
     df = df.with_columns(pl.Series(name="is_anomaly", values=is_anomaly))
 
+    # --- SHAP EXPLAINABILITY LAYER ---
+    try:
+        logger.info("Computing SHAP values for anomaly attribution...")
+        explainer = shap.TreeExplainer(model)
+        
+        anomaly_indices = [i for i, x in enumerate(is_anomaly) if x]
+        feature_names = encoded_df.columns.tolist()
+        shap_payloads = ["[]"] * len(pandas_df)
+
+        if anomaly_indices:
+            # Removed optimization cap: user wants all anomalies to have full feature reasoning
+
+            anom_encoded_df = encoded_df.iloc[anomaly_indices]
+            shap_vals = explainer.shap_values(anom_encoded_df)
+            
+            for j, orig_idx in enumerate(anomaly_indices):
+                row_shap = shap_vals[j]
+                # Sort by absolute magnitude to find top 3 impactful features
+                top_indices = np.argsort(np.abs(row_shap))[-3:][::-1]
+                
+                contributions = []
+                for idx in top_indices:
+                    contributions.append({
+                        "feature": feature_names[idx],
+                        "impact": float(row_shap[idx])
+                    })
+                shap_payloads[orig_idx] = json.dumps(contributions)
+
+        df = df.with_columns(pl.Series(name="SHAP_Payload", values=shap_payloads))
+        logger.info("SHAP attribution successfully embedded.")
+    except Exception as e:
+        logger.warning("SHAP attribution failed: %s", e)
+        df = df.with_columns(pl.Series(name="SHAP_Payload", values=["[]"] * len(pandas_df)))
+
     # --- TIER 2 THREAT ENGINE (SUPERVISED OR SYNTHETIC) ---
     if "Class" in pandas_df.columns:
         try:
             X = encoded_df.drop(columns=["Class"]) if "Class" in encoded_df.columns else encoded_df
             y = pandas_df["Class"].fillna(0)
 
+            max_train_samples = 50000
+            if len(X) > max_train_samples:
+                sample_idx = np.random.choice(len(X), size=max_train_samples, replace=False)
+                X_train = X.iloc[sample_idx]
+                y_train = y.iloc[sample_idx]
+            else:
+                X_train = X
+                y_train = y
+
             classifier = HistGradientBoostingClassifier(class_weight="balanced", random_state=42)
-            classifier.fit(X, y)
+            classifier.fit(X_train, y_train)
 
             probabilities = classifier.predict_proba(X)[:, 1]
             threat_scores = [round(p * 100, 2) for p in probabilities]
@@ -195,6 +245,8 @@ def process_and_detect(
             logger.warning("Synthetic Engine failed: %s", e)
             df = df.with_columns(pl.Series(name="Threat_Score", values=[0] * len(pandas_df)))
 
+    logger.info("FINISHED THREAT ENGINE")
+
     # --- AI REASON GENERATOR ---
     engineered_suffixes = ("_length", "_digit_ratio", "_upper_ratio", "_special_ratio")
     engineered_prefixes = ("nlp_pc",)
@@ -225,6 +277,9 @@ def process_and_detect(
             rare_cats[col] = counts[counts < 0.01].index.tolist()
 
         anomaly_indices = [i for i, x in enumerate(is_anomaly) if x]
+        
+        # Removing optimization cap: the user specifically requested every single anomaly to have reasoning.
+
         for idx in anomaly_indices:
             row = pandas_df.iloc[idx]
             reasons = []
@@ -259,6 +314,7 @@ def process_and_detect(
             reasons_list[idx] = " | ".join(reasons[:3])
 
     df = df.with_columns(pl.Series(name="AI_Reason", values=reasons_list))
+    logger.info("FINISHED REASON GENERATOR")
     raw_parquet_path = f"{session_dir}/raw_data.parquet"
     df.write_parquet(raw_parquet_path)
 
