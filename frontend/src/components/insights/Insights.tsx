@@ -6,6 +6,8 @@ import type {
     InsightsDashboardResponse,
     ColumnProfile,
     CorrelationEntry,
+    LineageTopology,
+    TrustMetrics // Imported new type
 } from "@/types/api";
 import {
     Brain,
@@ -23,6 +25,10 @@ import {
     RefreshCcw,
     ChevronDown,
     ChevronUp,
+    Network,
+    CheckCircle,
+    ShieldCheck, // Added for Human Trust Card
+    Scale // Added for SBVR rules
 } from "lucide-react";
 import { motion } from "framer-motion";
 import {
@@ -104,6 +110,197 @@ function SectionHeader({ icon, title, subtitle }: { icon: React.ReactNode; title
                 <p className="text-xs text-neutral-500">{subtitle}</p>
             </div>
         </div>
+    );
+}
+
+// Topological Lineage Drift Dashboard Card
+function LineageDriftCard({ topology }: { topology: LineageTopology }) {
+    if (!topology || topology.status === "skipped") return null;
+
+    const { drift_detected, current_structural_error, baseline_structural_error, topology_nodes, topology_edges } = topology;
+    const isDrift = drift_detected;
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.2 }}
+            className={`relative overflow-hidden bg-neutral-900/60 border ${isDrift ? 'border-rose-500/50 shadow-[0_0_30px_rgba(244,63,94,0.15)]' : 'border-emerald-500/30'} rounded-2xl p-6 backdrop-blur-xl h-full`}
+        >
+            {/* Background Glow */}
+            <div className={`absolute -right-10 -top-10 h-32 w-32 rounded-full opacity-20 blur-3xl ${isDrift ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+
+            <SectionHeader
+                icon={<Network className={`w-5 h-5 ${isDrift ? 'text-rose-400' : 'text-emerald-400'}`} />}
+                title="ETL Pipeline Lineage Integrity"
+                subtitle="Graph Convolutional Network (GCN) Topology Analysis"
+            />
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
+                <div className="col-span-2 bg-black/40 border border-white/5 rounded-xl p-5 flex items-center justify-between">
+                    <div>
+                        <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-1">Structural Health</p>
+                        {isDrift ? (
+                            <div className="flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-rose-500 animate-pulse" />
+                                <span className="text-lg font-bold text-rose-400">Upstream Topology Collapse Detected</span>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2">
+                                <CheckCircle className="w-5 h-5 text-emerald-500" />
+                                <span className="text-lg font-bold text-emerald-400">Lineage Matrix Intact</span>
+                            </div>
+                        )}
+                        <p className="text-sm text-neutral-400 mt-2 max-w-md">
+                            {isDrift
+                                ? "The geometric relationships between features have degraded significantly. This usually indicates a broken upstream SQL JOIN or a dropped relational table."
+                                : "The structural correlations between features exactly match the established historical graph baseline."}
+                        </p>
+                    </div>
+                    <div className="hidden md:block opacity-20">
+                        <Network className="w-16 h-16 text-white" />
+                    </div>
+                </div>
+
+                <div className="space-y-3 relative z-10">
+                    <div className="bg-black/40 border border-white/5 rounded-xl p-3 flex justify-between items-center">
+                        <span className="text-xs text-neutral-500">Current GAE Error</span>
+                        <span className={`font-mono font-bold ${isDrift ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            {current_structural_error?.toFixed(4) || "0.0000"}
+                        </span>
+                    </div>
+                    <div className="bg-black/40 border border-white/5 rounded-xl p-3 flex justify-between items-center">
+                        <span className="text-xs text-neutral-500">Baseline GAE Error</span>
+                        <span className="font-mono font-bold text-neutral-300">
+                            {baseline_structural_error?.toFixed(4) || "0.0000"}
+                        </span>
+                    </div>
+                    <div className="bg-black/40 border border-white/5 rounded-xl p-3 flex justify-between items-center">
+                        <span className="text-xs text-neutral-500">Graph Shape</span>
+                        <span className="font-mono text-xs text-neutral-400">
+                            {topology_nodes} Nodes / {topology_edges} Edges
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </motion.div>
+    );
+}
+
+// NEW: Human Trust Score (HTS) Gauge
+function HumanTrustCard({ metrics }: { metrics: TrustMetrics }) {
+    if (!metrics) return null;
+
+    const { trust_score, components } = metrics;
+    const isHighTrust = trust_score >= 80;
+    const isMedTrust = trust_score >= 60 && trust_score < 80;
+    const color = isHighTrust ? "text-emerald-400" : isMedTrust ? "text-amber-400" : "text-rose-400";
+    const bgGlow = isHighTrust ? "bg-emerald-500" : isMedTrust ? "bg-amber-500" : "bg-rose-500";
+
+    // SVG Circle Math
+    const radius = 40;
+    const circumference = 2 * Math.PI * radius;
+    const strokeDashoffset = circumference - (trust_score / 100) * circumference;
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.6 }}
+            className="relative overflow-hidden bg-neutral-900/60 border border-white/5 rounded-2xl p-6 backdrop-blur-xl h-full"
+        >
+            <div className={`absolute -right-10 -top-10 h-32 w-32 rounded-full opacity-10 blur-3xl ${bgGlow}`} />
+
+            <SectionHeader
+                icon={<ShieldCheck className={`w-5 h-5 ${color}`} />}
+                title="System Trust Calibration"
+                subtitle="Calculated Operational Reliability"
+            />
+
+            <div className="flex flex-col lg:flex-row items-center gap-6 mt-4">
+                {/* Circular Gauge */}
+                <div className="relative flex items-center justify-center w-32 h-32 shrink-0">
+                    <svg className="absolute inset-0 w-full h-full transform -rotate-90">
+                        <circle cx="64" cy="64" r={radius} className="stroke-neutral-800" strokeWidth="8" fill="transparent" />
+                        <motion.circle
+                            cx="64" cy="64" r={radius}
+                            className={`stroke-current ${color}`}
+                            strokeWidth="8" fill="transparent"
+                            strokeDasharray={circumference}
+                            initial={{ strokeDashoffset: circumference }}
+                            animate={{ strokeDashoffset }}
+                            transition={{ duration: 1.5, ease: "easeOut" }}
+                            strokeLinecap="round"
+                        />
+                    </svg>
+                    <div className="text-center absolute inset-0 flex flex-col items-center justify-center">
+                        <span className={`text-3xl font-black ${color}`}>{trust_score}</span>
+                        <span className="text-[10px] text-neutral-500 block -mt-1 font-bold tracking-wider">HTS</span>
+                    </div>
+                </div>
+
+                {/* Sub-components Breakdown */}
+                <div className="flex-1 w-full space-y-3">
+                    <div>
+                        <div className="flex justify-between text-xs mb-1">
+                            <span className="text-neutral-400">Causal Faithfulness (β)</span>
+                            <span className="font-mono text-neutral-300">{components.causal_faithfulness}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.causal_faithfulness}%` }} transition={{ duration: 1, delay: 0.2 }} className="h-full bg-cyan-400 rounded-full" />
+                        </div>
+                    </div>
+                    <div>
+                        <div className="flex justify-between text-xs mb-1">
+                            <span className="text-neutral-400">RL Action Confidence (γ)</span>
+                            <span className="font-mono text-neutral-300">{components.rl_confidence}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.rl_confidence}%` }} transition={{ duration: 1, delay: 0.4 }} className="h-full bg-purple-400 rounded-full" />
+                        </div>
+                    </div>
+                    <div>
+                        <div className="flex justify-between text-xs mb-1">
+                            <span className="text-neutral-400">Historical Precision (α)</span>
+                            <span className="font-mono text-neutral-300">{components.fpr_penalty}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.fpr_penalty}%` }} transition={{ duration: 1, delay: 0.6 }} className="h-full bg-emerald-400 rounded-full" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </motion.div>
+    );
+}
+
+function SBVRRulesCard({ rules }: { rules: string[] }) {
+    if (!rules || rules.length === 0) return null;
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.25 }}
+            className="bg-neutral-900/60 border border-purple-500/30 rounded-2xl p-6 backdrop-blur-xl relative overflow-hidden"
+        >
+            <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full opacity-10 blur-3xl bg-purple-500" />
+            <SectionHeader
+                icon={<Scale className="w-5 h-5 text-purple-400" />}
+                title="Neuro-Symbolic Logic Gate"
+                subtitle="Deterministic SBVR Business Rules generated by AI"
+            />
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                {rules.map((rule, i) => (
+                    <div key={i} className="bg-black/40 border border-white/5 rounded-xl p-3 flex items-start gap-3">
+                        <div className="mt-0.5 p-1.5 rounded-lg bg-purple-500/10 shrink-0">
+                            <Scale className="w-3.5 h-3.5 text-purple-400" />
+                        </div>
+                        <p className="text-sm font-mono text-neutral-300 leading-relaxed">{rule}</p>
+                    </div>
+                ))}
+            </div>
+        </motion.div>
     );
 }
 
@@ -476,7 +673,7 @@ export default function Insights({ sessionId, cachedInsights, onInsightsLoaded }
     }
 
     // ── Dashboard ─────────────────────────────────────────────
-    const { summary, column_profiles, missing_data_map, type_breakdown, top_correlations, anomaly_distribution, ai_narrative } = data;
+    const { summary, column_profiles, missing_data_map, type_breakdown, top_correlations, anomaly_distribution, ai_narrative, lineage_topology, trust_metrics, sbvr_rules } = data;
 
     const pieData = [
         { name: "Numeric", value: type_breakdown.numeric },
@@ -486,6 +683,26 @@ export default function Insights({ sessionId, cachedInsights, onInsightsLoaded }
 
     return (
         <div className="w-full space-y-8">
+
+            {/* WEEK 4 TOP DASHBOARD METRICS */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {lineage_topology && (
+                    <div className={trust_metrics ? "lg:col-span-2" : "lg:col-span-3"}>
+                        <LineageDriftCard topology={lineage_topology} />
+                    </div>
+                )}
+                {trust_metrics && (
+                    <div className={lineage_topology ? "lg:col-span-1" : "lg:col-span-3"}>
+                        <HumanTrustCard metrics={trust_metrics} />
+                    </div>
+                )}
+            </div>
+
+            {/* NEURO-SYMBOLIC RULES */}
+            {sbvr_rules && sbvr_rules.length > 0 && (
+                <SBVRRulesCard rules={sbvr_rules} />
+            )}
+
             {/* ── KPI Hero Bar (Updated to 3 columns) ────────────── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <KPICard icon={<Database className="w-5 h-5" style={{ color: ACCENT.purple.text }} />} label="Total Rows" value={summary.total_rows} accent={ACCENT.purple} delay={0.05} />

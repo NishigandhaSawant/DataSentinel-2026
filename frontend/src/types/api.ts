@@ -18,6 +18,7 @@ export interface AnomalyRow {
   is_anomaly: boolean;
   AI_Reason: string;
   Threat_Score: number;
+  Uncertainty_Score?: number; // <-- NEW: For Active Learning
   SHAP_Payload?: string;
   Counterfactual_Payload?: string;
   lof_score?: number;
@@ -40,7 +41,6 @@ export interface DriftReport {
 export interface SessionDataResponse {
   data: AnomalyRow[];
   total_anomalies: number;
-  // FE-06 FIX: total_rows is returned by the backend but was missing from this interface
   total_rows: number;
   drift_report?: DriftReport;
   recommendation?: string;
@@ -108,6 +108,27 @@ export interface AnomalyDistEntry {
   anomaly_count: number;
 }
 
+// NEW: Lineage Topology Interface
+export interface LineageTopology {
+  status: string;
+  drift_detected: boolean;
+  current_structural_error: number;
+  baseline_structural_error: number;
+  topology_nodes: number;
+  topology_edges: number;
+  reason?: string;
+}
+
+// NEW: Human Trust Score Metrics
+export interface TrustMetrics {
+  trust_score: number;
+  components: {
+    fpr_penalty: number;
+    causal_faithfulness: number;
+    rl_confidence: number;
+  };
+}
+
 export interface InsightsDashboardResponse {
   summary: InsightsSummary;
   column_profiles: ColumnProfile[];
@@ -116,6 +137,9 @@ export interface InsightsDashboardResponse {
   top_correlations: CorrelationEntry[];
   anomaly_distribution: AnomalyDistEntry[];
   ai_narrative: string[];
+  lineage_topology?: LineageTopology;
+  trust_metrics?: TrustMetrics; // <-- NEW: Attached to insights
+  sbvr_rules?: string[]; // <-- NEW: SBVR constraints
 }
 
 export interface VizData {

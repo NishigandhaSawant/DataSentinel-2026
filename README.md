@@ -515,6 +515,14 @@ npx eslint src/
 
 ---
 
+## 🆕 Recent Updates
+
+- **Fixed DiCE Counterfactual Engine Crash**: Added mathematical probability synthesizers to `_IFWrapper` so that continuous causal discovery and counterfactuals don't crash when `predict_proba` is expected by SKLearn models.
+- **Fixed Frontend Anomaly Truncation**: Removed the client-side API filter `only_anomalies=true` which was previously truncating actual total anomaly counts. Threat score filtering is now done client-side so `totalAnomalies` accurately reflects the backend count.
+- **Fixed Lineage Drift False Positives (GAE Baseline Scoping)**: Fixed a bug where a single global hardcoded file `baseline_lineage_graph.json` was used for all datasets. The Graph AutoEncoder baseline is now securely scoped and hashed based on the dataset's unique column schema.
+
+---
+
 ## 📜 License
 
 This project is for educational and portfolio purposes.

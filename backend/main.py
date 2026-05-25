@@ -1,15 +1,18 @@
 """
 DataSentinel — FastAPI Application
 API routes, file upload handling, and session management.
+
+Includes Active Learning feedback loops and RL Remediation triggers.
 """
 
 import os
 import re
 import json
+from datetime import datetime, timezone
+import io
 
 # Load .env file before anything else reads environment variables
 from dotenv import load_dotenv
-import io
 
 load_dotenv()
 
@@ -25,7 +28,6 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import polars as pl
 from fastapi import FastAPI, UploadFile, File, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-# NEW: Import StreamingResponse
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -46,7 +48,6 @@ from engines import (
     clean_dataset,
     get_viz_data,
     generate_insights,
-    # NEW: Import the streaming version
     execute_natural_query_stream,
     confirm_and_execute_edit,
     generate_quality_report,
@@ -66,32 +67,42 @@ logger.info(
     "ENABLED (DS_API_KEY is set)" if is_auth_enabled() else "DISABLED (no DS_API_KEY)",
 )
 
-
+# ── ACTIVE LEARNING FEEDBACK MODEL ───────────────────────────────────────────
 class FeedbackRequest(BaseModel):
-    session_id: str
-    row_data: dict
-    is_correct: bool
+    row_index: int
+    label: int  # 1 for True Positive (Confirm Anomaly), 0 for False Positive
 
-
-@app.post("/api/feedback/", dependencies=[Depends(require_api_key)])
+@app.post("/api/feedback/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
-def submit_feedback(request: Request, payload: FeedbackRequest):
-    import json
-
-    feedback_file = os.path.join(_BACKEND_DIR, "data", "feedback.jsonl")
-    os.makedirs(os.path.dirname(feedback_file), exist_ok=True)
-    # H-01 FIX: Prevent oversized row_data from being written to disk (DoS via write amplification)
-    payload_bytes = json.dumps(payload.row_data).encode()
-    MAX_FEEDBACK_BYTES = 64 * 1024  # 64 KB per feedback entry is more than enough
-    if len(payload_bytes) > MAX_FEEDBACK_BYTES:
-        return JSONResponse(
-            status_code=413, content={"error": "Feedback payload too large."}
-        )
-    with open(feedback_file, "a") as f:
-        # BUG-08 FIX: .dict() is deprecated in Pydantic v2; use .model_dump()
-        f.write(json.dumps(payload.model_dump()) + "\n")
-    return {"status": "success"}
-
+def submit_active_learning_feedback(request: Request, session_id: str, payload: FeedbackRequest):
+    """
+    Catches Active Learning feedback from the human-in-the-loop UI.
+    Writes to the persistent feedback log used by the Trust Score and Threshold Nudge algorithms.
+    """
+    try:
+        session_dir = _session_dir(session_id)
+        feedback_path = os.path.normpath(os.path.join(session_dir, "..", "feedback_log.jsonl"))
+        
+        # Create directory if it doesn't exist just in case
+        os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
+        
+        feedback_entry = {
+            "session_id": session_id,
+            "row_index": payload.row_index,
+            "label": payload.label,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Append to the JSONL log
+        with open(feedback_path, "a") as f:
+            f.write(json.dumps(feedback_entry) + "\n")
+            
+        return {"status": "success", "message": "Feedback recorded for RL/Threshold tuning."}
+        
+    except Exception as e:
+        logger.error(f"Failed to save active learning feedback: {e}")
+        return JSONResponse(status_code=500, content={"error": f"Failed to save feedback: {str(e)}"})
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── OPTION 3: THE LEARNING AGENT (DYNAMIC KNOWLEDGE BASE) ────────────────────
 class KnowledgeRule(BaseModel):
@@ -275,7 +286,6 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
 
         elif filename_lower.endswith(".json"):
             try:
-                import json
                 import pandas as pd
 
                 with open(temp_file_path, "r") as jf:
@@ -326,6 +336,14 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
         # Pass the already-loaded DataFrame to avoid double read
         result = process_and_detect(df=df, file_path=temp_file_path)
 
+        # If the pipeline itself reported a fatal error, surface it as HTTP 500
+        # so the frontend's catch block fires and shows the upload error instead
+        # of navigating to the detection page with no parquet on disk.
+        if isinstance(result, dict) and result.get("status") == "error":
+            error_msg = result.get("error") or "Detection pipeline failed with an unknown error."
+            logger.error("Pipeline error for upload '%s': %s", file.filename, error_msg)
+            return JSONResponse(status_code=500, content={"error": error_msg})
+
         # Persist drift_report + recommendation in session metadata so
         # the /api/data/ endpoint can return them later.
         if isinstance(result, dict) and result.get("session_id"):
@@ -334,15 +352,28 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
             )
             try:
                 with open(_meta_path, "w") as _mf:
+                    class NumpyEncoder(json.JSONEncoder):
+                        def default(self, obj):
+                            import numpy as np
+                            if isinstance(obj, np.integer): return int(obj)
+                            if isinstance(obj, np.floating): return float(obj) if not np.isnan(obj) else None
+                            if isinstance(obj, np.ndarray): return obj.tolist()
+                            return super().default(obj)
+
                     json.dump(
                         {
                             "drift_report": result.get("drift_report"),
                             "recommendation": result.get("recommendation"),
+                            "trust_metrics": result.get("trust_metrics"),
                         },
                         _mf,
+                        cls=NumpyEncoder
                     )
-            except Exception:
-                pass  # non-critical — detection still succeeds
+            except Exception as e:
+                import traceback
+                with open("DUMP_ERROR.txt", "w") as errf:
+                    errf.write(traceback.format_exc())
+                logger.error(f"Failed to save detection_meta: {e}")
 
         return result
 
@@ -405,8 +436,6 @@ def pseudonymise(request: Request, session_id: str, columns: list[str]):
         "message": f"Salted SHA-256 pseudonymisation applied to {len(columns)} columns.",
         "detection_result": result,
     }
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -474,13 +503,19 @@ def get_data(
 
 @app.post("/api/clean/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
-def clean_data(request: Request, session_id: str, action: str = Query("drop")):
+def clean_data(request: Request, session_id: str, action: str = Query("quarantine")):
+    """
+    Executes the specified cleaning policy.
+    Supports: drop, quarantine, winsorize, mask, impute (RL Agent)
+    """
     try:
         validate_session_id(session_id)
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
 
+    # Dispatch to our hardened cleaning engine
     result = clean_dataset(session_id, action)
+    
     if "error" in result:
         return JSONResponse(status_code=400, content=result)
     return result
@@ -535,11 +570,31 @@ def compare_data(request: Request, session_id: str):
     ]
     df_raw_clean_view = df_raw.drop([c for c in cols_to_drop if c in df_raw.columns])
 
+    # Find rows that actually changed in user-facing columns
+    if is_dropped:
+        return {
+            "is_dropped": True,
+            "original": [],
+            "cleaned": [],
+            "count": len(df_raw) - len(df_clean),
+        }
+
+    compare_cols = [c for c in df_clean.columns if c in df_raw_clean_view.columns]
+    
+    changed_mask = pl.lit(False)
+    for col in compare_cols:
+        diff = (df_raw_clean_view[col] != df_clean[col]).fill_null(False)
+        null_diff = (df_raw_clean_view[col].is_null() != df_clean[col].is_null())
+        changed_mask = changed_mask | diff | null_diff
+        
+    original_changed = df_raw_clean_view.filter(changed_mask)
+    cleaned_changed = df_clean.filter(changed_mask)
+
     return {
-        "is_dropped": is_dropped,
-        "original": df_raw_clean_view.head(50).to_dicts(),
-        "cleaned": df_clean.head(50).to_dicts(),
-        "count": len(df_clean),
+        "is_dropped": False,
+        "original": original_changed.head(50).to_dicts(),
+        "cleaned": cleaned_changed.head(50).to_dicts(),
+        "count": len(original_changed),
     }
 
 
@@ -612,7 +667,8 @@ def download_data(request: Request, session_id: str, source: str = Query("cleane
     # ── FIX 1: AGGRESSIVE WIPE LIST FOR GODMODE FEATURES ──
     internal_cols_set = {
         "is_anomaly", "Threat_Score", "AI_Reason", "SHAP_Payload", 
-        "Counterfactual_Payload", "lof_score", "lstm_anomaly_score", "ecod_score"
+        "Counterfactual_Payload", "lof_score", "lstm_anomaly_score", "ecod_score",
+        "Uncertainty_Score" # Clean up the active learning data
     }
     engineered_suffixes = (
         "_freq",
@@ -670,7 +726,6 @@ def get_quarantine(request: Request, session_id: str, limit: int = Query(1000)):
 
     return {"data": df.to_dicts(), "count": total_count}
 
-# NEW: Update to use streaming response
 @app.post("/api/query/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("20/minute")
 async def query_data(

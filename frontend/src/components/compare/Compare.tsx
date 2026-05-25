@@ -13,6 +13,13 @@ const IGNORE_KEYS = [
   'is_anomaly',
   'AI_Reason',
   'Threat_Score',
+  'Uncertainty_Score',
+  'logic_violation',
+  'lof_score',
+  'lstm_anomaly_score',
+  'ecod_score',
+  'SHAP_Payload',
+  'Counterfactual_Payload'
 ];
 
 /* ─── Helpers ────────────────────────────────────────────────────────────────────────────── */

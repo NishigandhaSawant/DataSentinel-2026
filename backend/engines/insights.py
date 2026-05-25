@@ -275,6 +275,41 @@ def generate_insights(session_id: str) -> dict:
         summary, column_profiles, top_correlations, missing_data_map
     )
 
+    # ── Load Extra Metadata (Domain, Lineage Topology, Trust Metrics) ──────
+    domain_detected = "unknown"
+    meta_path = f"{session_dir}/metadata.json"
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as mf:
+                m_data = json.load(mf)
+                domain_detected = m_data.get("domain", "unknown")
+        except Exception:
+            pass
+
+    lineage_topology = None
+    trust_metrics = None
+    det_meta_path = f"{session_dir}/detection_meta.json"
+    if os.path.exists(det_meta_path):
+        try:
+            with open(det_meta_path, "r") as dmf:
+                dm_data = json.load(dmf)
+                if "drift_report" in dm_data and dm_data["drift_report"]:
+                    lineage_topology = dm_data["drift_report"].get("lineage_topology")
+                trust_metrics = dm_data.get("trust_metrics")
+        except Exception:
+            pass
+
+    sbvr_rules = []
+    sbvr_path = f"{session_dir}/sbvr_rules.json"
+    if os.path.exists(sbvr_path):
+        try:
+            with open(sbvr_path, "r") as f:
+                rules_data = json.load(f)
+                if isinstance(rules_data, list):
+                    sbvr_rules = [r.get("sbvr_statement") for r in rules_data if "sbvr_statement" in r]
+        except Exception:
+            pass
+
     return {
         "summary": summary,
         "column_profiles": column_profiles,
@@ -283,6 +318,10 @@ def generate_insights(session_id: str) -> dict:
         "top_correlations": top_correlations,
         "anomaly_distribution": anomaly_distribution,
         "ai_narrative": ai_narrative,
+        "domain_detected": domain_detected,
+        "lineage_topology": lineage_topology,
+        "trust_metrics": trust_metrics,
+        "sbvr_rules": sbvr_rules,
     }
 
 

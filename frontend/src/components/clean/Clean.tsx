@@ -15,9 +15,10 @@ import {
   Download,
   Info,
   Sparkles,
+  Brain, // Added for RL Impute
 } from 'lucide-react';
 import api from '@/services/api.service';
-import type { AnomalyRow, QuarantineResponse, CleanResponse } from '@/types/api';
+import type { AnomalyRow, QuarantineResponse } from '@/types/api';
 
 /* ─── Types & Constants ──────────────────────────────────────────────────────────────────── */
 
@@ -26,6 +27,25 @@ export interface CleanProps {
   onComplete: () => void;
   recommendedMethod?: string;
   cleaningRationale?: string;
+}
+
+// Added new interfaces for RL Telemetry mapping
+interface RecleanReport {
+  state: string;
+  action_taken: string;
+  reward: number;
+}
+
+export interface CleanResponse {
+  status: string;
+  action_taken: string;
+  original_rows: number;
+  new_total: number;
+  rows_delta: number;
+  pii_cols_scrubbed: string[];
+  reclean_report?: Record<string, RecleanReport>;
+  total_reward?: number;
+  error?: string;
 }
 
 const CLEANING_METHODS = [
@@ -67,11 +87,11 @@ const CLEANING_METHODS = [
   },
   {
     id: 'impute',
-    icon: Activity,
-    title: 'Contextual Imputation',
-    techDesc: 'Uses Predictive KNN to fill in corrupted cells based on past behavior.',
-    analogy: 'The Auto-Correct',
-    simpleDesc: 'Acts like smart auto-correct. Replaces glitches with a highly educated guess.',
+    icon: Brain, // Swapped to Brain to reflect the RL AI
+    title: 'Autonomous RL Imputation',
+    techDesc: 'ReClean MDP Agent: Dynamically selects KNN, Mean, or Median based on Q-Learning states to maximize downstream variance.',
+    analogy: 'The AI Surgeon',
+    simpleDesc: 'Uses Reinforcement Learning to autonomously decide the best way to heal corrupted data without destroying it.',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/10',
     border: 'border-emerald-500/30',
@@ -221,7 +241,6 @@ function QuarantineVaultModal({ sessionId, onClose }: { sessionId: string; onClo
             </button>
           </div>
         </div>
-        {/* BUG FIX: Added data-lenis-prevent to this container so the user can scroll the table */}
         <div className="flex-1 overflow-auto p-0" data-lenis-prevent>
           {renderContent()}
         </div>
@@ -232,10 +251,7 @@ function QuarantineVaultModal({ sessionId, onClose }: { sessionId: string; onClo
 
 /**
  * Clean component for sanitizing datasets with anomalies.
- * Allows user to choose a cleaning method like Quarantine, Masking, etc.
- *
- * @param {CleanProps} props - Properties mapping session data and completions.
- * @returns {React.JSX.Element} The rendered clean interface.
+ * Allows user to choose a cleaning method like Quarantine, Masking, RL Impute, etc.
  */
 export default function Clean({
   sessionId,
@@ -244,7 +260,7 @@ export default function Clean({
   cleaningRationale,
 }: CleanProps): React.JSX.Element {
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [result, setResult] = useState<CleanResponse | null>(null); // Replaced successMsg with full result payload
   const [showVault, setShowVault] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -253,7 +269,11 @@ export default function Clean({
     setErrorMsg(null);
     try {
       const res = await api.post<CleanResponse>(`/api/clean/${sessionId}?action=${action}`);
-      setSuccessMsg(`Successfully applied ${action}. Final dataset has ${res.data.new_total} rows.`);
+      if (res.data.error) {
+        setErrorMsg(res.data.error);
+      } else {
+        setResult(res.data);
+      }
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { error?: string; detail?: string } };
@@ -271,33 +291,118 @@ export default function Clean({
     }
   };
 
-  if (successMsg) {
+  // SUCCESS / RESULTS SCREEN
+  if (result) {
+    const isRL = result.action_taken === "impute" && result.reclean_report;
+
     return (
-      <div className="w-full mt-6">
+      <div className="w-full mt-6 space-y-6">
         <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
+          initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="p-12 text-center flex flex-col items-center justify-center bg-green-500/10 border border-green-500/20 rounded-2xl"
+          className="p-6 bg-green-500/10 border border-green-500/20 rounded-2xl flex items-start gap-4"
         >
-          <CheckCircle className="w-16 h-16 text-green-400 mb-4" />
-          <h3 className="text-2xl font-semibold text-white mb-2">Sanitization Complete</h3>
-          <p className="text-green-400/80 mb-8">{successMsg}</p>
-          <div className="flex space-x-4">
-            <button
-              onClick={() => setShowVault(true)}
-              className="px-6 py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-xl transition-colors border border-neutral-700 flex items-center"
-            >
-              <Shield className="w-5 h-5 mr-2 text-blue-400" />
-              Open Quarantine Vault
-            </button>
-            <button
-              onClick={onComplete}
-              className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl transition-colors flex items-center"
-            >
-              Continue to Export →
-            </button>
+          <CheckCircle className="w-10 h-10 text-green-400 shrink-0" />
+          <div>
+            <h3 className="text-2xl font-bold text-white mb-2">Dataset Successfully Sanitized</h3>
+            <p className="text-green-400/80">
+              Action executed: <span className="font-mono text-green-300 font-bold">{result.action_taken.toUpperCase()}</span>.
+              Zero-leak PII scanner successfully reviewed the outgoing payload.
+            </p>
           </div>
         </motion.div>
+
+        {/* METRICS GRID */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="p-5 bg-neutral-900/60 border border-white/5 rounded-2xl backdrop-blur-xl">
+            <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-2">Rows Preserved</p>
+            <p className="text-3xl font-black text-white">{result.new_total.toLocaleString()}</p>
+            <p className="text-xs text-neutral-400 mt-1">Out of {result.original_rows.toLocaleString()} original</p>
+          </motion.div>
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="p-5 bg-neutral-900/60 border border-white/5 rounded-2xl backdrop-blur-xl">
+            <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-2">Rows Delta</p>
+            <p className="text-3xl font-black text-rose-400">{result.rows_delta.toLocaleString()}</p>
+            <p className="text-xs text-neutral-400 mt-1">Total volume shifted</p>
+          </motion.div>
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="p-5 bg-neutral-900/60 border border-white/5 rounded-2xl backdrop-blur-xl">
+            <p className="text-xs font-bold text-neutral-500 uppercase tracking-widest mb-2">PII Columns Vaulted</p>
+            <p className="text-3xl font-black text-cyan-400">{result.pii_cols_scrubbed?.length || 0}</p>
+            <p className="text-xs text-neutral-400 mt-1">SHA-256 pseudonymised</p>
+          </motion.div>
+        </div>
+
+        {/* RL TELEMETRY DASHBOARD */}
+        {isRL && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.4 }}
+            className="bg-neutral-900/60 border border-emerald-500/30 rounded-2xl p-6 backdrop-blur-xl"
+          >
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-500/20 rounded-lg"><Brain className="w-5 h-5 text-emerald-400" /></div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">ReClean RL Agent Telemetry</h3>
+                  <p className="text-xs text-neutral-400">Markov Decision Process (MDP) Execution Log</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-neutral-500 uppercase tracking-widest">Episode Reward</p>
+                <p className="text-2xl font-black text-emerald-400 font-mono">{result.total_reward?.toFixed(4)}</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {Object.entries(result.reclean_report!).filter(([k]) => k !== "info" && k !== "total_reward").map(([col, report], i) => {
+                const isHighReward = report.reward > 0.8;
+                const isMedReward = report.reward > 0.5 && report.reward <= 0.8;
+                return (
+                  <motion.div key={col} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 + (i * 0.1) }} className="grid grid-cols-4 gap-4 items-center bg-black/40 border border-white/5 rounded-xl p-4">
+                    <div className="col-span-1">
+                      <p className="text-xs text-neutral-500">Feature</p>
+                      <p className="text-sm font-bold text-white truncate">{col}</p>
+                    </div>
+                    <div className="col-span-1 border-l border-white/10 pl-4">
+                      <p className="text-xs text-neutral-500">Agent State</p>
+                      <p className="text-sm font-mono text-cyan-400">{report.state}</p>
+                    </div>
+                    <div className="col-span-1 border-l border-white/10 pl-4">
+                      <p className="text-xs text-neutral-500">Action Policy</p>
+                      <p className="text-sm font-mono text-emerald-400">{report.action_taken}</p>
+                    </div>
+                    <div className="col-span-1 border-l border-white/10 pl-4 text-right">
+                      <p className="text-xs text-neutral-500">KS-Reward</p>
+                      <p className={`text-lg font-black font-mono ${isHighReward ? "text-emerald-400" : isMedReward ? "text-yellow-400" : "text-red-400"}`}>
+                        +{report.reward.toFixed(4)}
+                      </p>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-neutral-500 mt-4 italic">
+              * Reward is formulated as the inverse Kolmogorov-Smirnov distance (1.0 - KS Stat). Higher rewards mean the downstream data distribution was perfectly preserved.
+            </p>
+          </motion.div>
+        )}
+
+        <div className="flex justify-end pt-4 space-x-4">
+          <button
+            onClick={() => setShowVault(true)}
+            className="px-6 py-3 bg-neutral-800 hover:bg-neutral-700 text-white font-bold rounded-xl transition-colors border border-neutral-700 flex items-center"
+          >
+            <Shield className="w-5 h-5 mr-2 text-blue-400" />
+            Open Quarantine Vault
+          </button>
+          <button
+            onClick={onComplete}
+            className="px-6 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl transition-colors flex items-center"
+          >
+            Continue to Export →
+          </button>
+        </div>
+
         <AnimatePresence>
           {showVault && <QuarantineVaultModal sessionId={sessionId} onClose={() => setShowVault(false)} />}
         </AnimatePresence>
@@ -305,6 +410,7 @@ export default function Clean({
     );
   }
 
+  // DEFAULT / SELECTION SCREEN
   return (
     <div className="w-full mt-6">
       {cleaningRationale && (
@@ -347,6 +453,8 @@ export default function Clean({
           return (
             <div key={method.id} className="group relative w-full h-[280px] [perspective:1000px]">
               <div className="w-full h-full transition-transform duration-500 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)]">
+
+                {/* FRONT OF CARD */}
                 <div className={`absolute inset-0 [backface-visibility:hidden] group-hover:pointer-events-none bg-neutral-900 border ${isRecommended ? 'border-blue-500/50 shadow-[0_0_20px_rgba(59,130,246,0.2)]' : 'border-neutral-800'} p-8 rounded-2xl flex flex-col`}>
                   {isRecommended && (
                     <div className="absolute top-0 right-0 bg-blue-500 text-white text-xs font-bold px-4 py-1.5 rounded-bl-lg rounded-tr-xl uppercase tracking-wider z-10 shadow-lg">
@@ -364,6 +472,8 @@ export default function Clean({
                   <h3 className="text-xl font-semibold mb-2">{method.title}</h3>
                   <p className="text-neutral-400 text-sm flex-1">{method.techDesc}</p>
                 </div>
+
+                {/* BACK OF CARD */}
                 <div className={`absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] pointer-events-none group-hover:pointer-events-auto bg-neutral-800 border ${method.border} p-8 rounded-2xl flex flex-col justify-between`}>
                   <div>
                     <div className="flex items-center mb-3">
@@ -384,14 +494,12 @@ export default function Clean({
                     )}
                   </button>
                 </div>
+
               </div>
             </div>
           );
         })}
       </div>
-      <AnimatePresence>
-        {showVault && <QuarantineVaultModal sessionId={sessionId} onClose={() => setShowVault(false)} />}
-      </AnimatePresence>
     </div>
   );
 }
