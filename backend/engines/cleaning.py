@@ -322,7 +322,7 @@ def _action_mask(df: pl.DataFrame) -> tuple[pl.DataFrame, dict]:
     }
 
 
-def _action_impute(df: pl.DataFrame) -> tuple[pl.DataFrame, dict]:
+def _action_impute(df: pl.DataFrame, session_id: str) -> tuple[pl.DataFrame, dict]:
     """
     Delegate to the RL Autonomous Remediation Agent.
     Import is lazy so a missing engines.rl_cleaner does not crash the module.
@@ -336,7 +336,7 @@ def _action_impute(df: pl.DataFrame) -> tuple[pl.DataFrame, dict]:
         )
 
     logger.info("Engaging RL Autonomous Remediation Agent...")
-    rl_result = apply_rl_cleaning(df)
+    rl_result = apply_rl_cleaning(df, session_id)
 
     if not isinstance(rl_result, dict):
         raise TypeError(
@@ -417,7 +417,7 @@ def clean_dataset(session_id: str, action: str = "drop") -> dict:
     # ── DISPATCH ──
     try:
         if action == "impute":
-            cleaned_df, reclean_report = _action_impute(df)
+            cleaned_df, reclean_report = _action_impute(df, session_id)
         elif action == "drop":
             cleaned_df, reclean_report = _action_drop(df)
         elif action == "quarantine":

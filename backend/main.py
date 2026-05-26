@@ -11,6 +11,14 @@ import json
 from datetime import datetime, timezone
 import io
 
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        import numpy as np
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return float(obj) if not np.isnan(obj) else None
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        return super().default(obj)
+
 # Load .env file before anything else reads environment variables
 from dotenv import load_dotenv
 
@@ -26,7 +34,7 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import polars as pl
-from fastapi import FastAPI, UploadFile, File, Query, Depends, Request
+from fastapi import FastAPI, UploadFile, File, Query, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -81,7 +89,7 @@ def submit_active_learning_feedback(request: Request, session_id: str, payload: 
     """
     try:
         session_dir = _session_dir(session_id)
-        feedback_path = os.path.normpath(os.path.join(session_dir, "..", "feedback_log.jsonl"))
+        feedback_path = os.path.join(session_dir, "feedback_log.jsonl")
         
         # Create directory if it doesn't exist just in case
         os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
@@ -226,10 +234,62 @@ def health_check():
     connected = check_groq_connectivity()
     return {"groq": connected, "engine": "Groq LPU Cloud"}
 
+import uuid
+job_status = {}
+
+def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: str, is_temp_file: bool = True):
+    try:
+        job_status[session_id] = {"status": "Processing: Ingesting dataset", "progress": 10}
+        
+        result = process_and_detect(df=df, file_path=temp_file_path, session_id=session_id)
+        
+        if isinstance(result, dict) and result.get("status") == "error":
+            error_msg = result.get("error") or "Detection pipeline failed with an unknown error."
+            logger.error("Pipeline error for session '%s': %s", session_id, error_msg)
+            job_status[session_id] = {"status": "error", "error": error_msg}
+            return
+
+        if isinstance(result, dict) and result.get("session_id"):
+            _meta_path = os.path.join(
+                _session_dir(result["session_id"]), "detection_meta.json"
+            )
+            try:
+                with open(_meta_path, "w") as _mf:
+                    json.dump(
+                        {
+                            "drift_report": result.get("drift_report"),
+                            "recommendation": result.get("recommendation"),
+                            "trust_metrics": result.get("trust_metrics"),
+                        },
+                        _mf,
+                        cls=NumpyEncoder
+                    )
+            except Exception as e:
+                import traceback
+                with open("DUMP_ERROR.txt", "w") as errf:
+                    errf.write(traceback.format_exc())
+                logger.error(f"Failed to save detection_meta: {e}")
+
+        job_status[session_id] = {"status": "completed", "progress": 100, "result": result}
+    except Exception as e:
+        logger.error(f"Background job failed: {str(e)}")
+        job_status[session_id] = {"status": "error", "error": str(e)}
+    finally:
+        if is_temp_file and temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+@app.get("/api/status/{session_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("120/minute")
+def get_status(request: Request, session_id: str):
+    if session_id not in job_status:
+        return JSONResponse(status_code=404, content={"error": "Session/Job not found"})
+    return job_status[session_id]
+
+
 
 @app.post("/api/upload/", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
-async def upload_csv(request: Request, file: UploadFile = File(...)):
+async def upload_csv(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     # Clean up stale sessions (>24h old) instead of nuking everything
     cleanup_stale_sessions(max_age_hours=24)
 
@@ -241,11 +301,20 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     temp_file_path = os.path.join(_BACKEND_DIR, "temp_uploads", safe_filename)
 
     try:
-        contents = await file.read()
-
-        # --- INCREASED LIMIT: 100MB -> 500MB ---
         # SAFE-01 FIX: Reject files over 500MB before writing to disk (prevents OOM)
         MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+        
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "error": f"File too large ({int(content_length) // (1024*1024)} MB). Maximum upload size is 500 MB."
+                },
+            )
+
+        contents = await file.read()
+
         if len(contents) > MAX_UPLOAD_BYTES:
             return JSONResponse(
                 status_code=413,
@@ -333,56 +402,19 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
                 content={"status": "rejected", "errors": validation["errors"]},
             )
 
-        # Pass the already-loaded DataFrame to avoid double read
-        result = process_and_detect(df=df, file_path=temp_file_path)
+        session_id = str(uuid.uuid4())
+        job_status[session_id] = {"status": "started", "progress": 0}
+        
+        # Dispatch background task
+        background_tasks.add_task(process_background_job, session_id, df, temp_file_path, True)
 
-        # If the pipeline itself reported a fatal error, surface it as HTTP 500
-        # so the frontend's catch block fires and shows the upload error instead
-        # of navigating to the detection page with no parquet on disk.
-        if isinstance(result, dict) and result.get("status") == "error":
-            error_msg = result.get("error") or "Detection pipeline failed with an unknown error."
-            logger.error("Pipeline error for upload '%s': %s", file.filename, error_msg)
-            return JSONResponse(status_code=500, content={"error": error_msg})
-
-        # Persist drift_report + recommendation in session metadata so
-        # the /api/data/ endpoint can return them later.
-        if isinstance(result, dict) and result.get("session_id"):
-            _meta_path = os.path.join(
-                _session_dir(result["session_id"]), "detection_meta.json"
-            )
-            try:
-                with open(_meta_path, "w") as _mf:
-                    class NumpyEncoder(json.JSONEncoder):
-                        def default(self, obj):
-                            import numpy as np
-                            if isinstance(obj, np.integer): return int(obj)
-                            if isinstance(obj, np.floating): return float(obj) if not np.isnan(obj) else None
-                            if isinstance(obj, np.ndarray): return obj.tolist()
-                            return super().default(obj)
-
-                    json.dump(
-                        {
-                            "drift_report": result.get("drift_report"),
-                            "recommendation": result.get("recommendation"),
-                            "trust_metrics": result.get("trust_metrics"),
-                        },
-                        _mf,
-                        cls=NumpyEncoder
-                    )
-            except Exception as e:
-                import traceback
-                with open("DUMP_ERROR.txt", "w") as errf:
-                    errf.write(traceback.format_exc())
-                logger.error(f"Failed to save detection_meta: {e}")
-
-        return result
+        return {"session_id": session_id, "status": "processing"}
 
     except Exception as e:
         logger.error("Upload failed: %s", e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-    finally:
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # ── NEW: PII SCANNER ROUTES ──────────────────────────────────────────────────
@@ -639,6 +671,54 @@ def report(request: Request, session_id: str):
         return JSONResponse(status_code=400, content=result)
     return result
 
+@app.get("/api/report/download/{session_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+def download_report_pdf(request: Request, session_id: str):
+    try:
+        validate_session_id(session_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+
+    result = generate_quality_report(session_id)
+    if "error" in result:
+        return JSONResponse(status_code=400, content=result)
+        
+    try:
+        from reportlab.pdfgen import canvas
+        import io
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer)
+        c.drawString(100, 800, "DataSentinel Quality Report")
+        c.drawString(100, 780, f"Session ID: {session_id}")
+        
+        y = 750
+        for key, value in result.items():
+            if y < 100:
+                c.showPage()
+                y = 800
+            if isinstance(value, dict):
+                c.drawString(100, y, f"{key}:")
+                y -= 20
+                for k, v in value.items():
+                    c.drawString(120, y, f"{str(k)}: {str(v)}")
+                    y -= 20
+            else:
+                c.drawString(100, y, f"{str(key)}: {str(value)}")
+            y -= 20
+            
+        c.save()
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer, 
+            media_type="application/pdf", 
+            headers={"Content-Disposition": f'attachment; filename="quality_report.pdf"'}
+        )
+    except ImportError:
+        return JSONResponse(status_code=500, content={"error": "reportlab not installed."})
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        return JSONResponse(status_code=500, content={"error": "Failed to generate PDF."})
+
 
 @app.get("/api/download/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
@@ -799,7 +879,7 @@ def list_samples(request: Request):
 
 @app.post("/api/load-sample/{filename}", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
-async def load_sample(request: Request, filename: str):
+async def load_sample(request: Request, filename: str, background_tasks: BackgroundTasks):
     """Loads a built-in sample dataset through the full detection pipeline."""
     # Sanitise filename — only allow known files
     allowed = {"fraud_transactions.csv", "patient_vitals.csv", "ecommerce_reviews.csv"}
@@ -819,8 +899,12 @@ async def load_sample(request: Request, filename: str):
             return JSONResponse(
                 status_code=400, content={"errors": validation["errors"]}
             )
-        result = process_and_detect(df=df, file_path=file_path)
-        return result
+        session_id = str(uuid.uuid4())
+        job_status[session_id] = {"status": "started", "progress": 0}
+        
+        background_tasks.add_task(process_background_job, session_id, df, file_path, False)
+        
+        return {"session_id": session_id, "status": "processing"}
     except Exception as e:
         logger.error("Sample load failed: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})

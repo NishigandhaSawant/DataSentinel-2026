@@ -517,6 +517,11 @@ npx eslint src/
 
 ## 🆕 Recent Updates
 
+- **Next.js App Router Migration**: Completely eradicated the legacy single-page state machine in `page.tsx` and structurally migrated the entire UI to use Next.js App Router URLs (e.g., `/[sessionId]/detect`). Introduced a `SessionProvider` React context to seamlessly manage state across dynamic routes.
+- **Asynchronous ML Processing Pipeline**: Offloaded the heavy `process_and_detect` machine learning workload to FastAPI `BackgroundTasks`. Added a new `/api/status/{session_id}` endpoint to stream real-time telemetry to the frontend, preventing connection timeouts on large datasets.
+- **Fixed Imputation Comparison Bug**: Removed the "Row Deletion" action from the Reinforcement Learning agent (`rl_cleaner.py`) when performing imputation. This ensures `impute` strictly modifies data in-place without dropping rows, allowing the `/api/compare` endpoint to successfully render the 1-to-1 inline modification view.
+- **Fixed `upload_csv` Scope Crash**: Moved `NumpyEncoder` to the module level in `main.py` to permanently fix an `UnboundLocalError` scoping bug that crashed the application during metadata storage.
+- **PDF Reporting & Infrastructure**: Verified the `/api/report/download/{session_id}` PDF generation engine using `reportlab`. Added missing critical dependencies (`torch`, `groq`, `reportlab`) to `requirements.txt` to ensure flawless out-of-the-box installations.
 - **Fixed DiCE Counterfactual Engine Crash**: Added mathematical probability synthesizers to `_IFWrapper` so that continuous causal discovery and counterfactuals don't crash when `predict_proba` is expected by SKLearn models.
 - **Fixed Frontend Anomaly Truncation**: Removed the client-side API filter `only_anomalies=true` which was previously truncating actual total anomaly counts. Threat score filtering is now done client-side so `totalAnomalies` accurately reflects the backend count.
 - **Fixed Lineage Drift False Positives (GAE Baseline Scoping)**: Fixed a bug where a single global hardcoded file `baseline_lineage_graph.json` was used for all datasets. The Graph AutoEncoder baseline is now securely scoped and hashed based on the dataset's unique column schema.

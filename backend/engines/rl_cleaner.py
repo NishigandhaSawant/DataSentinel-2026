@@ -16,31 +16,30 @@ from sklearn.impute import KNNImputer
 from scipy.stats import ks_2samp
 from utils import logger, _BACKEND_DIR
 
-# The persistent brain of our RL Agent
-Q_TABLE_PATH = os.path.join(_BACKEND_DIR, "data", "reclean_q_table.json")
-
 class ReCleanAgent:
-    def __init__(self, epsilon=0.2, alpha=0.1, gamma=0.9):
+    def __init__(self, session_id: str, epsilon=0.2, alpha=0.1, gamma=0.9):
+        self.session_id = session_id
+        self.q_table_path = os.path.join(_BACKEND_DIR, "sessions", session_id, "reclean_q_table.json")
         self.epsilon = epsilon  # Exploration rate
         self.alpha = alpha      # Learning rate
         self.gamma = gamma      # Discount factor
         
-        # Actions: 0=Mean, 1=Median, 2=KNN(k=3), 3=Drop Rows
-        self.actions = [0, 1, 2, 3] 
+        # Actions: 0=Mean, 1=Median, 2=KNN(k=3)
+        self.actions = [0, 1, 2] 
         self.q_table = self._load_q_table()
 
     def _load_q_table(self):
-        if os.path.exists(Q_TABLE_PATH):
+        if os.path.exists(self.q_table_path):
             try:
-                with open(Q_TABLE_PATH, "r") as f:
+                with open(self.q_table_path, "r") as f:
                     return json.load(f)
             except Exception:
                 pass
         return {}
 
     def _save_q_table(self):
-        os.makedirs(os.path.dirname(Q_TABLE_PATH), exist_ok=True)
-        with open(Q_TABLE_PATH, "w") as f:
+        os.makedirs(os.path.dirname(self.q_table_path), exist_ok=True)
+        with open(self.q_table_path, "w") as f:
             json.dump(self.q_table, f)
 
     def get_state(self, series: pd.Series) -> str:
@@ -73,8 +72,10 @@ class ReCleanAgent:
             return np.random.choice(self.actions)
         
         # Exploit: Choose the cleaning method with the highest historical reward
-        q_values = self.q_table[state]
-        best_action = max(q_values, key=q_values.get)
+        valid_q_values = {k: v for k, v in self.q_table[state].items() if int(k) in self.actions}
+        if not valid_q_values:
+            return np.random.choice(self.actions)
+        best_action = max(valid_q_values, key=valid_q_values.get)
         return int(best_action)
 
     def update_q_value(self, state: str, action: int, reward: float):
@@ -103,22 +104,17 @@ def calculate_reward(original_series: pd.Series, cleaned_series: pd.Series, acti
     
     # Reward is high if distribution is preserved (KS stat is close to 0)
     reward = 1.0 - ks_stat
-    
-    # Penalize dropping too much data
-    if action == 3: # Drop
-        data_loss_pct = 1.0 - (len(cleaned_series) / len(original_series))
-        reward -= (data_loss_pct * 1.5) # Heavy penalty for data destruction
         
     return float(reward)
 
 
-def apply_rl_cleaning(df: pl.DataFrame) -> dict:
+def apply_rl_cleaning(df: pl.DataFrame, session_id: str) -> dict:
     """
     Iterates over anomalous columns, uses the RL agent to select the optimal
     cleaning strategy, applies it, calculates the reward, and learns.
     """
     logger.info("Initializing RL Autonomous Remediation Agent...")
-    agent = ReCleanAgent()
+    agent = ReCleanAgent(session_id)
     
     pandas_df = df.to_pandas()
     numeric_cols = pandas_df.select_dtypes(include=[np.number]).columns
@@ -129,8 +125,7 @@ def apply_rl_cleaning(df: pl.DataFrame) -> dict:
     action_map = {
         0: "Mean Imputation",
         1: "Median Imputation",
-        2: "KNN Imputation (k=3)",
-        3: "Row Deletion"
+        2: "KNN Imputation (k=3)"
     }
 
     is_anomaly = pandas_df.get('is_anomaly', pd.Series([False]*len(pandas_df))).astype(bool)
@@ -166,8 +161,6 @@ def apply_rl_cleaning(df: pl.DataFrame) -> dict:
                 pandas_df[col] = imputer.fit_transform(pandas_df[[col]])
             except Exception:
                 pandas_df[col] = pandas_df[col].fillna(pandas_df[col].median()) # Fallback
-        elif action == 3:
-            pandas_df = pandas_df.dropna(subset=[col])
             
         # Calculate Reward based on downstream utility
         reward = calculate_reward(original_series, pandas_df[col], action)

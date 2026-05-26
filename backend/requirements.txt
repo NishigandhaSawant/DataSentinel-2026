@@ -19,3 +19,6 @@ scipy==1.17.1
 tensorflow==2.21.0
 xgboost==3.2.0
 dice_ml==0.12
+torch
+groq
+reportlab

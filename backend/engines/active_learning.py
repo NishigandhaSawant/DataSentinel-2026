@@ -82,7 +82,7 @@ def compute_human_trust_score(session_id: str, causal_payloads: list) -> dict:
     # 3. Feedback Retention (RL Acceptance)
     # How often does the user accept the RL Agent's recommended imputation?
     # For now, we query the Q-table to see how "confident" the agent is (max Q-value)
-    q_table_path = os.path.join(_BACKEND_DIR, "data", "reclean_q_table.json")
+    q_table_path = os.path.join(_BACKEND_DIR, "sessions", session_id, "reclean_q_table.json")
     retention_score = 0.75 # Default
     
     if os.path.exists(q_table_path):
