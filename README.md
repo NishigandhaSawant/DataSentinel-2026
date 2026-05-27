@@ -150,7 +150,7 @@ The application opens at **http://localhost:3000**.
 ## 🏗️ System Architecture
 
 <p align="center">
-  <img src="frontend/public/architecture.png" alt="DataSentinel System Architecture" width="100%" />
+  <img src="public/architecture.png" alt="DataSentinel System Architecture" width="100%" />
 </p>
 
 ### Architecture Overview
