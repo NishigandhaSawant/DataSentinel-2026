@@ -1,0 +1,76 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic:
+      - generic: DATASENTINEL
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - generic [ref=e8]:
+          - heading "YOUR DATA IS A LIABILITY." [level=1] [ref=e9]:
+            - text: YOUR DATA IS A
+            - text: LIABILITY.
+          - paragraph [ref=e10]: Raw datasets are filled with PII leaks, formatting errors, and hidden anomalies waiting to break your pipelines.
+        - generic:
+          - generic:
+            - img
+            - heading "PII Leaks." [level=2]
+          - generic:
+            - img
+            - heading "Formatting Chaos." [level=2]
+          - generic:
+            - img
+            - heading "Until Now." [level=2]
+            - paragraph: Scroll down to initialize the Sentinel.
+      - generic [ref=e11]:
+        - generic [ref=e15]:
+          - heading "The Architecture" [level=2] [ref=e16]:
+            - img [ref=e17]
+            - text: The Architecture
+          - heading "Built for the Age of AI." [level=3] [ref=e25]:
+            - text: Built for the
+            - text: Age of AI.
+          - paragraph [ref=e26]: Legacy tools buckle under modern data volume. DataSentinel fuses deterministic logic with Groq-accelerated AI to clean data at the speed of thought.
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - img [ref=e30]
+            - heading "Zero-Leak PII Vault" [level=4] [ref=e33]
+            - paragraph [ref=e34]: Before a single byte is analyzed, our local edge-scanner identifies and cryptographically vaults personal identities. Your sensitive data never hits the cloud.
+          - generic [ref=e35]:
+            - img [ref=e37]
+            - heading "Neuro-Symbolic Logic" [level=4] [ref=e39]
+            - paragraph [ref=e40]: We don't just guess. DataSentinel combines strict, dynamic mathematical rules with semantic AI evaluation to automatically reject impossible realities in your dataset.
+          - generic [ref=e41]:
+            - img [ref=e43]
+            - heading "Groq LPU Acceleration" [level=4] [ref=e45]
+            - paragraph [ref=e46]: Powered by Llama 3.3 70B running on Groq's Language Processing Units. Generate complex SQL queries, statistical profiles, and narrative insights in literal milliseconds.
+      - generic [ref=e48]:
+        - generic:
+          - heading "Raw Data is Chaos." [level=2]
+          - generic:
+            - generic: NaN
+            - generic: NULL_ERR
+            - generic: NaN
+            - generic: NULL_ERR
+            - generic: NULL_ERR
+            - generic: NULL_ERR
+            - generic: NaN
+            - generic: NaN
+            - generic: NULL_ERR
+            - generic: NaN
+            - generic: NaN
+            - generic: NULL_ERR
+            - generic: NULL_ERR
+            - generic: NaN
+            - generic: NULL_ERR
+            - generic: NULL_ERR
+            - generic: NULL_ERR
+            - generic: NaN
+            - generic: NaN
+            - generic: NULL_ERR
+        - generic:
+          - heading "DATASENTINEL ENGINE" [level=3]
+          - paragraph: Neuro-symbolic logic and LPU acceleration instantly reconstructs structural integrity.
+        - button "Enter the Workspace" [ref=e50]:
+          - text: Enter the Workspace
+          - img [ref=e51]
+  - button "Open Next.js Dev Tools" [ref=e58] [cursor=pointer]:
+    - img [ref=e59]

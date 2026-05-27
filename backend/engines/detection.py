@@ -1053,10 +1053,12 @@ def _stage_engineer(ctx: PipelineContext) -> PipelineContext:
                         out = keras.layers.TimeDistributed(keras.layers.Dense(1))(dec)
                         autoencoder = keras.Model(inp, out)
                         autoencoder.compile(optimizer="adam", loss="mse")
+                        early_stop = keras.callbacks.EarlyStopping(monitor='loss', patience=1, restore_best_weights=True)
                         autoencoder.fit(
                             X_seq, X_seq,
                             epochs=ctx.cfg.lstm_epochs,
                             batch_size=ctx.cfg.lstm_batch_size,
+                            callbacks=[early_stop],
                             verbose=0,
                         )
 
@@ -1173,78 +1175,93 @@ def _stage_score(ctx: PipelineContext) -> PipelineContext:
             return (arr - amin) / (amax - amin)
         return np.zeros_like(arr, dtype=float)
 
-    # 1. Isolation Forest  (drift-aware joblib cache)
-    if_path = os.path.join(ctx.models_dir, "if_model.joblib")
-    try:
-        if JOBLIB_AVAILABLE and not drifted and os.path.exists(if_path):
-            logger.info("Ensemble: Loading cached Isolation Forest.")
-            ctx.model = joblib.load(if_path)
-        else:
-            logger.info("Ensemble: Fitting Isolation Forest...")
-            ctx.model = IsolationForest(
-                n_estimators=ctx.cfg.if_n_estimators, n_jobs=-1, random_state=42
-            )
-            ctx.model.fit(ctx.train_df.values)
-            if JOBLIB_AVAILABLE:
-                joblib.dump(ctx.model, if_path)
-        ctx.scores_raw["if"] = -ctx.model.decision_function(ctx.encoded_df.values)
-    except (ValueError, RuntimeError) as e:
-        logger.warning("Ensemble IF failed: %s", e)
+    import concurrent.futures
 
-    # 2. LOF  (drift-aware cached scaler)
-    scaler_path = os.path.join(ctx.models_dir, "scaler.joblib")
-    lof_path    = os.path.join(ctx.models_dir, "lof_model.joblib")
-    if len(ctx.train_df) > 1:
+    def _fit_if():
+        if_path = os.path.join(ctx.models_dir, "if_model.joblib")
         try:
-            if JOBLIB_AVAILABLE and not drifted and os.path.exists(scaler_path) and os.path.exists(lof_path):
-                logger.info("Ensemble: Loading cached LOF + Scaler.")
-                scaler      = joblib.load(scaler_path)
-                clf_lof     = joblib.load(lof_path)
-                full_scaled = scaler.transform(ctx.encoded_df.values)
+            if JOBLIB_AVAILABLE and not drifted and os.path.exists(if_path):
+                logger.info("Ensemble: Loading cached Isolation Forest.")
+                ctx.model = joblib.load(if_path)
             else:
-                logger.info("Ensemble: Fitting LOF...")
-                scaler       = RobustScaler()
-                train_scaled = scaler.fit_transform(ctx.train_df.values)
-                full_scaled  = scaler.transform(ctx.encoded_df.values)
-                clf_lof = LocalOutlierFactor(
-                    n_neighbors=max(1, min(ctx.cfg.lof_n_neighbors, len(ctx.train_df) - 1)),
-                    novelty=True, n_jobs=-1,
+                logger.info("Ensemble: Fitting Isolation Forest...")
+                # Reduce n_jobs to avoid thread thrashing since we are running concurrently
+                ctx.model = IsolationForest(
+                    n_estimators=ctx.cfg.if_n_estimators, n_jobs=2, random_state=42
                 )
-                clf_lof.fit(train_scaled)
+                ctx.model.fit(ctx.train_df.values)
                 if JOBLIB_AVAILABLE:
-                    joblib.dump(scaler,  scaler_path)
-                    joblib.dump(clf_lof, lof_path)
-            ctx.scores_raw["lof"] = -clf_lof.score_samples(full_scaled)
-        except (ValueError, np.linalg.LinAlgError, RuntimeError) as e:
-            logger.warning("Ensemble LOF failed: %s", e)
-
-    # 3. ECOD  (v4.1 — restored with its weight 0.10)
-    if ECOD_AVAILABLE:
-        try:
-            logger.info("Ensemble: Fitting ECOD...")
-            ecod_safe = ctx.encoded_df.loc[:, ctx.encoded_df.nunique() > 1]
-            if not ecod_safe.empty:
-                clf_ecod = ECOD()
-                clf_ecod.fit(ecod_safe.values)
-                ctx.scores_raw["ecod"] = clf_ecod.decision_scores_
+                    joblib.dump(ctx.model, if_path)
+            ctx.scores_raw["if"] = -ctx.model.decision_function(ctx.encoded_df.values)
         except (ValueError, RuntimeError) as e:
-            logger.warning("Ensemble ECOD failed: %s", e)
+            logger.warning("Ensemble IF failed: %s", e)
 
-    # 4. LNN Autoencoder
-    if LNN_AVAILABLE:
-        valid_cols = [
-            c for c in ctx.encoded_df.columns
-            if pd.api.types.is_numeric_dtype(ctx.encoded_df[c])
-        ]
-        if valid_cols:
+    def _fit_lof():
+        scaler_path = os.path.join(ctx.models_dir, "scaler.joblib")
+        lof_path    = os.path.join(ctx.models_dir, "lof_model.joblib")
+        if len(ctx.train_df) > 1:
             try:
-                logger.info("Ensemble: Fitting LNN Autoencoder...")
-                lnn_results = detect_anomalies_lnn(
-                    df=pl.from_pandas(ctx.encoded_df), numeric_cols=valid_cols, epochs=50
-                )
-                ctx.scores_raw["lnn"] = np.array(lnn_results["threat_scores"])
+                if JOBLIB_AVAILABLE and not drifted and os.path.exists(scaler_path) and os.path.exists(lof_path):
+                    logger.info("Ensemble: Loading cached LOF + Scaler.")
+                    scaler      = joblib.load(scaler_path)
+                    clf_lof     = joblib.load(lof_path)
+                    full_scaled = scaler.transform(ctx.encoded_df.values)
+                else:
+                    logger.info("Ensemble: Fitting LOF...")
+                    scaler       = RobustScaler()
+                    train_scaled = scaler.fit_transform(ctx.train_df.values)
+                    full_scaled  = scaler.transform(ctx.encoded_df.values)
+                    clf_lof = LocalOutlierFactor(
+                        n_neighbors=max(1, min(ctx.cfg.lof_n_neighbors, len(ctx.train_df) - 1)),
+                        novelty=True, n_jobs=2,
+                    )
+                    clf_lof.fit(train_scaled)
+                    if JOBLIB_AVAILABLE:
+                        joblib.dump(scaler,  scaler_path)
+                        joblib.dump(clf_lof, lof_path)
+                ctx.scores_raw["lof"] = -clf_lof.score_samples(full_scaled)
+            except (ValueError, np.linalg.LinAlgError, RuntimeError) as e:
+                logger.warning("Ensemble LOF failed: %s", e)
+
+    def _fit_ecod():
+        if ECOD_AVAILABLE:
+            try:
+                logger.info("Ensemble: Fitting ECOD...")
+                ecod_safe = ctx.encoded_df.loc[:, ctx.encoded_df.nunique() > 1]
+                if not ecod_safe.empty:
+                    # ECOD uses n_jobs internally if available, we limit to avoid thrashing
+                    clf_ecod = ECOD(n_jobs=2)
+                    clf_ecod.fit(ecod_safe.values)
+                    ctx.scores_raw["ecod"] = clf_ecod.decision_scores_
             except (ValueError, RuntimeError) as e:
-                logger.warning("Ensemble LNN failed: %s", e)
+                logger.warning("Ensemble ECOD failed: %s", e)
+
+    def _fit_lnn():
+        if LNN_AVAILABLE:
+            valid_cols = [
+                c for c in ctx.encoded_df.columns
+                if pd.api.types.is_numeric_dtype(ctx.encoded_df[c])
+            ]
+            if valid_cols:
+                try:
+                    logger.info("Ensemble: Fitting LNN Autoencoder...")
+                    lnn_results = detect_anomalies_lnn(
+                        df=pl.from_pandas(ctx.encoded_df), numeric_cols=valid_cols, epochs=30
+                    )
+                    ctx.scores_raw["lnn"] = np.array(lnn_results["threat_scores"])
+                except (ValueError, RuntimeError) as e:
+                    logger.warning("Ensemble LNN failed: %s", e)
+
+    # Run ensemble models in parallel to massively speed up processing on CPUs
+    logger.info("Ensemble: Launching parallel detectors...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(_fit_if),
+            executor.submit(_fit_lof),
+            executor.submit(_fit_ecod),
+            executor.submit(_fit_lnn)
+        ]
+        concurrent.futures.wait(futures)
 
     # 5. LSTM  (pre-computed in _stage_engineer)
     if ctx.lstm_available and ctx.lstm_scores is not None:
@@ -1417,8 +1434,9 @@ def _stage_explain(ctx: PipelineContext) -> PipelineContext:
                 clf = XGBClassifier(
                     scale_pos_weight=scale_pos, eval_metric="aucpr",
                     random_state=42, verbosity=0, use_label_encoder=False,
+                    tree_method="hist",  # CPU-optimized histogram method
                 )
-                logger.info("XGBClassifier (scale_pos_weight=%.1f).", scale_pos)
+                logger.info("XGBClassifier (scale_pos_weight=%.1f, tree_method='hist').", scale_pos)
             else:
                 clf = HistGradientBoostingClassifier(class_weight="balanced", random_state=42)
                 logger.info("XGBoost unavailable — using HistGradientBoostingClassifier.")

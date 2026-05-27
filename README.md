@@ -156,16 +156,11 @@ graph TD
     %% Browser Layer
     subgraph Browser["BROWSER — Next.js 16 + React 19"]
         direction LR
-        L["3D Landing
-Three.js"]
-        D["Detection
-Dashboard"]
-        I["Insights
-Panel"]
-        C["Cleaning
-Compare"]
-        Q["NL Query
-(SSE Chat)"]
+        L["3D Landing<br>Three.js"]
+        D["Detection<br>Dashboard"]
+        I["Insights<br>Panel"]
+        C["Cleaning<br>Compare"]
+        Q["NL Query<br>(SSE Chat)"]
     end
 
     %% API Layer
@@ -178,20 +173,13 @@ Compare"]
         
         subgraph Engines["AI & Processing Engines"]
             direction LR
-            PII["PII Scanner
-Regex+SHA256"]
-            Det["Detection
-IF+LSTM+SHAP"]
-            Log["Logic Gate
-Neuro-Symbolic"]
-            Drift["Drift & DiCE
-KS-Test+Counterfactuals"]
-            Clean["Cleaning
-Polars"]
-            Query["Query
-DuckDB+Groq"]
-            Vis["Visualization
-Engine"]
+            PII["PII Scanner<br>Regex+SHA256"]
+            Det["Detection<br>IF+LSTM+SHAP"]
+            Log["Logic Gate<br>Neuro-Symbolic"]
+            Drift["Drift & DiCE<br>KS-Test+Counterfactuals"]
+            Clean["Cleaning<br>Polars"]
+            Query["Query<br>DuckDB+Groq"]
+            Vis["Visualization<br>Engine"]
         end
         
         Gateway --> PII
@@ -213,17 +201,14 @@ Engine"]
     
     %% Storage Layer
     subgraph Storage["Storage Layer"]
-        Session["💾 Session Storage
-Parquet files"]
-        Audit["📝 Audit Trail
-JSONL logs"]
+        Session["💾 Session Storage<br>Parquet files"]
+        Audit["📝 Audit Trail<br>JSONL logs"]
     end
     
     Backend --> Storage
     
     %% External
-    GroqCloud["☁️ Groq Cloud LPU
-Llama 3.3 70B"]
+    GroqCloud["☁️ Groq Cloud LPU<br>Llama 3.3 70B"]
     GroqClient -- "AI Inference" --> GroqCloud
 ```
 
@@ -235,12 +220,12 @@ The platform processes data through a **7-stage sequential pipeline**:
 
 ```mermaid
 flowchart LR
-    1["1. UPLOAD\nCSV/JSON/Excel"] --> 2["2. PII VAULT\nSHA-256"]
-    2 --> 3["3. ANOMALY DETECTION\nIF+LSTM+SHAP"]
-    3 --> 4["4. AI INSIGHTS\nStats+LLM"]
-    4 --> 5["5. SMART CLEANING\nDrop/Quarantine"]
-    5 --> 6["6. QUERY & EXPLORE\nNL → SQL"]
-    6 --> 7["7. EXPORT\nReport + Download"]
+    1["1. UPLOAD<br>CSV/JSON/Excel"] --> 2["2. PII VAULT<br>SHA-256"]
+    2 --> 3["3. ANOMALY DETECTION<br>IF+LSTM+SHAP"]
+    3 --> 4["4. AI INSIGHTS<br>Stats+LLM"]
+    4 --> 5["5. SMART CLEANING<br>Drop/Quarantine"]
+    5 --> 6["6. QUERY & EXPLORE<br>NL → SQL"]
+    6 --> 7["7. EXPORT<br>Report + Download"]
 ```
 
 | Stage | Engine | What Happens |
@@ -267,15 +252,20 @@ DataSentinel/
 │   ├── groq_client.py           # Centralized Groq LLM client with retry logic
 │   ├── engines/
 │   │   ├── __init__.py          # Re-exports all engine functions
-│   │   ├── detection.py         # Isolation Forest + SHAP anomaly detection pipeline
+│   │   ├── active_learning.py   # Active Learning & Uncertainty Sampling
+│   │   ├── causal_rca.py        # Continuous DAG Discovery (NOTEARS)
 │   │   ├── cleaning.py          # Multi-strategy anomaly cleaning (drop/quarantine/impute)
+│   │   ├── detection.py         # Isolation Forest + LSTM anomaly detection pipeline
 │   │   ├── insights.py          # Statistical profiling + AI narrative generation
-│   │   ├── query.py             # Natural language → SQL via Groq + DuckDB execution
-│   │   ├── visualization.py     # Chart data aggregation (histograms, correlations)
-│   │   ├── quality.py           # Data quality report & health score generation
+│   │   ├── lineage_gae.py       # Graph AutoEncoder for lineage drift detection
 │   │   ├── logic_gate.py        # AI-generated neuro-symbolic validation rules
+│   │   ├── neuro_symbolic.py    # Logical Neural Network constraints
 │   │   ├── nlp_bridge.py        # NLP feature engineering (TF-IDF + SVD) for text columns
-│   │   └── pii_scanner.py       # PII detection & SHA-256 pseudonymisation
+│   │   ├── pii_scanner.py       # PII detection & SHA-256 pseudonymisation
+│   │   ├── quality.py           # Data quality report & health score generation
+│   │   ├── query.py             # Natural language → SQL via Groq + DuckDB execution
+│   │   ├── rl_cleaner.py        # Reinforcement Learning agent for data imputation
+│   │   └── visualization.py     # Chart data aggregation (histograms, correlations)
 │   ├── data/
 │   │   ├── fraud_transactions.csv    # Sample: Financial fraud dataset
 │   │   ├── patient_vitals.csv        # Sample: Healthcare vitals dataset
@@ -298,9 +288,21 @@ DataSentinel/
 │   │   └── architecture.png     # System architecture diagram
 │   ├── src/
 │   │   ├── app/
-│   │   │   ├── page.tsx         # Main application page & pipeline orchestrator
+│   │   │   ├── page.tsx         # Main landing page
 │   │   │   ├── layout.tsx       # Root layout with SmoothScroller
-│   │   │   └── globals.css      # Global styles & Tailwind configuration
+│   │   │   ├── globals.css      # Global styles & Tailwind configuration
+│   │   │   └── [sessionId]/     # Dynamic session routing App Router
+│   │   │       ├── SessionProvider.tsx # Client-side state manager
+│   │   │       ├── layout.tsx          # Session layout (nav bar)
+│   │   │       ├── upload/page.tsx     # File upload & schema validation
+│   │   │       ├── detect/page.tsx     # Detection results & RCA dashboard
+│   │   │       ├── insights/page.tsx   # Statistical & AI narratives
+│   │   │       ├── clean/page.tsx      # Multi-strategy data cleaning
+│   │   │       ├── compare/page.tsx    # Before/After data comparison
+│   │   │       ├── edit/page.tsx       # Inline data review & edit
+│   │   │       ├── visualize/page.tsx  # Analytics charts
+│   │   │       ├── query/page.tsx      # Natural language chat (SSE)
+│   │   │       └── report/page.tsx     # Health scorecard & export
 │   │   ├── components/
 │   │   │   ├── landing/
 │   │   │   │   ├── HeroLanding.tsx        # GSAP scroll-driven cinematic intro
@@ -513,18 +515,7 @@ npx eslint src/
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
----
 
-## 🆕 Recent Updates
-
-- **Next.js App Router Migration**: Completely eradicated the legacy single-page state machine in `page.tsx` and structurally migrated the entire UI to use Next.js App Router URLs (e.g., `/[sessionId]/detect`). Introduced a `SessionProvider` React context to seamlessly manage state across dynamic routes.
-- **Asynchronous ML Processing Pipeline**: Offloaded the heavy `process_and_detect` machine learning workload to FastAPI `BackgroundTasks`. Added a new `/api/status/{session_id}` endpoint to stream real-time telemetry to the frontend, preventing connection timeouts on large datasets.
-- **Fixed Imputation Comparison Bug**: Removed the "Row Deletion" action from the Reinforcement Learning agent (`rl_cleaner.py`) when performing imputation. This ensures `impute` strictly modifies data in-place without dropping rows, allowing the `/api/compare` endpoint to successfully render the 1-to-1 inline modification view.
-- **Fixed `upload_csv` Scope Crash**: Moved `NumpyEncoder` to the module level in `main.py` to permanently fix an `UnboundLocalError` scoping bug that crashed the application during metadata storage.
-- **PDF Reporting & Infrastructure**: Verified the `/api/report/download/{session_id}` PDF generation engine using `reportlab`. Added missing critical dependencies (`torch`, `groq`, `reportlab`) to `requirements.txt` to ensure flawless out-of-the-box installations.
-- **Fixed DiCE Counterfactual Engine Crash**: Added mathematical probability synthesizers to `_IFWrapper` so that continuous causal discovery and counterfactuals don't crash when `predict_proba` is expected by SKLearn models.
-- **Fixed Frontend Anomaly Truncation**: Removed the client-side API filter `only_anomalies=true` which was previously truncating actual total anomaly counts. Threat score filtering is now done client-side so `totalAnomalies` accurately reflects the backend count.
-- **Fixed Lineage Drift False Positives (GAE Baseline Scoping)**: Fixed a bug where a single global hardcoded file `baseline_lineage_graph.json` was used for all datasets. The Graph AutoEncoder baseline is now securely scoped and hashed based on the dataset's unique column schema.
 
 ---
 

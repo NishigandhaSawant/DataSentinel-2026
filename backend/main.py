@@ -131,22 +131,41 @@ def generate_fix(request: Request, session_id: str, payload: GenerateFixRequest)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/session/{session_id}/delete")
-@limiter.limit("5/minute")
+@limiter.limit("60/minute")  # raised: rapid beacon retries must not be 429'd
 def delete_session(request: Request, session_id: str):
     """
-    Called via navigator.sendBeacon from the frontend when the user refreshes/unloads the page.
-    Deletes the session directory completely.
+    Called via navigator.sendBeacon (or direct POST) from the frontend when the
+    user triggers a session reset.  Deletes both the on-disk session directory
+    AND the in-memory job_status entry so nothing leaks.
+
+    NOTE: We compute the session path manually here instead of calling
+    _session_dir() because _session_dir() calls os.makedirs() which would
+    re-create an empty directory immediately after we just deleted it.
     """
     try:
-        if not validate_session_id(session_id):
-            return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
-            
-        session_dir = _session_dir(session_id)
+        validate_session_id(session_id)  # raises ValueError on bad input
+
+        # Build path without calling _session_dir (which re-creates the dir)
+        session_dir = os.path.join(_BACKEND_DIR, "sessions", session_id)
+
+        deleted_files = False
         if os.path.exists(session_dir):
             shutil.rmtree(session_dir, ignore_errors=True)
-            logger.info("Session %s deleted via frontend unload beacon.", session_id)
-            return {"status": "success", "message": "Session deleted"}
+            deleted_files = True
+            logger.info("Session %s: on-disk data purged.", session_id)
+
+        # Also evict the in-memory job status so stale progress data can't
+        # bleed into a future session with the same ID (extremely unlikely but
+        # correct to clean up).
+        if session_id in job_status:
+            del job_status[session_id]
+            logger.info("Session %s: in-memory job_status evicted.", session_id)
+
+        if deleted_files:
+            return {"status": "success", "message": "Session fully purged"}
         return JSONResponse(status_code=404, content={"error": "Session not found"})
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     except Exception as e:
         logger.error("Error deleting session %s: %s", session_id, e)
         return JSONResponse(status_code=500, content={"error": "Failed to delete session"})

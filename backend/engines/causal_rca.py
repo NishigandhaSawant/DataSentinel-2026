@@ -45,8 +45,14 @@ def compute_dag_penalty(W: torch.Tensor) -> torch.Tensor:
 def learn_causal_graph(df: pd.DataFrame, max_epochs=200, lambda_l1=0.01) -> np.ndarray:
     """
     Fits the Causal DAG using gradient descent.
+    Optimized for performance: Downsamples to 10,000 rows max if dataset is large.
     """
-    X = torch.FloatTensor(df.values)
+    if len(df) > 10000:
+        df_train = df.sample(n=10000, random_state=42)
+    else:
+        df_train = df
+        
+    X = torch.FloatTensor(df_train.values)
     d = X.shape[1]
     
     model = NOTEARS_MLP(d)
