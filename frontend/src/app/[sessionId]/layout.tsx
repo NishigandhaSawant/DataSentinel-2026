@@ -1,5 +1,5 @@
 "use client";
-import { ShieldCheck, Trash2, Edit, BarChart, Brain, Terminal, ArrowRight, FileCheck } from "lucide-react";
+import { ShieldCheck, Trash2, Edit, BarChart, Brain, Terminal, ArrowRight, FileCheck, UploadCloud } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { use } from "react";
@@ -17,6 +17,7 @@ export default function SessionLayout({
   const pathname = usePathname();
 
   const steps = [
+    { id: 'upload', icon: <UploadCloud size={16} />, label: 'Upload' },
     { id: 'detect', icon: <ShieldCheck size={16} />, label: 'Detection' },
     { id: 'insights', icon: <Brain size={16} />, label: 'Insights' },
     { id: 'clean', icon: <Trash2 size={16} />, label: 'Cleaning' },

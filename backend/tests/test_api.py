@@ -56,9 +56,9 @@ class TestUploadEndpoint:
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "success"
+        assert data["status"] == "processing"
         assert "session_id" in data
-        assert "anomaly_count" in data
+        assert "dataset_status" in data
 
     def test_upload_too_large_rejected(self, client):
         """Files over 500MB should be rejected."""

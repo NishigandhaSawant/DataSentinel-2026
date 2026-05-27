@@ -3,7 +3,7 @@ DataSentinel — Engines Package
 Re-exports all engine functions for convenient imports.
 """
 
-from engines.detection import process_and_detect
+from engines.detection import process_and_detect, generate_counterfactual_for_row
 from engines.cleaning import clean_dataset
 from engines.visualization import get_viz_data
 from engines.insights import generate_insights
@@ -13,6 +13,7 @@ from engines.pii_scanner import scan_for_pii, pseudonymise_columns
 
 __all__ = [
     "process_and_detect",
+    "generate_counterfactual_for_row",
     "clean_dataset",
     "get_viz_data",
     "generate_insights",

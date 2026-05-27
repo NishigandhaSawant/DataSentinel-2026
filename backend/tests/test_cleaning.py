@@ -32,7 +32,7 @@ class TestDropStrategy:
 
     def test_quarantine_file_created(self, numeric_df):
         session_id = _setup_detected_session(numeric_df)
-        clean_dataset(session_id, "drop")
+        clean_dataset(session_id, "quarantine")
 
         session_dir = _session_dir(session_id)
         quarantine_path = os.path.join(session_dir, "quarantined_data.parquet")

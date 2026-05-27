@@ -2,12 +2,15 @@
 DataSentinel — FastAPI Application
 API routes, file upload handling, and session management.
 
-Includes Active Learning feedback loops and RL Remediation triggers.
+Includes Active Learning feedback loops, RL Remediation triggers,
+Smart Schema Versioning, and strict Session Purging.
 """
 
 import os
 import re
 import json
+import uuid
+import shutil
 from datetime import datetime, timezone
 import io
 
@@ -24,9 +27,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Bypass Loky/Joblib CPU counting bug on Windows that causes ValueError: 0 physical cores < 1
+# Bypass Loky/Joblib CPU counting bug on Windows
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "4")
-# Prevent OpenMP and BLAS from spawning hundreds of threads, which deadlocks Polars on Windows
+# Prevent OpenMP and BLAS from spawning hundreds of threads
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -34,7 +37,9 @@ os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import polars as pl
-from fastapi import FastAPI, UploadFile, File, Query, Depends, Request, BackgroundTasks
+import shutil
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Query, Depends, Request, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -53,6 +58,7 @@ from schema import SchemaEnforcer
 from auth import require_api_key, is_auth_enabled
 from engines import (
     process_and_detect,
+    generate_counterfactual_for_row,
     clean_dataset,
     get_viz_data,
     generate_insights,
@@ -83,15 +89,9 @@ class FeedbackRequest(BaseModel):
 @app.post("/api/feedback/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
 def submit_active_learning_feedback(request: Request, session_id: str, payload: FeedbackRequest):
-    """
-    Catches Active Learning feedback from the human-in-the-loop UI.
-    Writes to the persistent feedback log used by the Trust Score and Threshold Nudge algorithms.
-    """
     try:
         session_dir = _session_dir(session_id)
         feedback_path = os.path.join(session_dir, "feedback_log.jsonl")
-        
-        # Create directory if it doesn't exist just in case
         os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
         
         feedback_entry = {
@@ -101,18 +101,57 @@ def submit_active_learning_feedback(request: Request, session_id: str, payload: 
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        # Append to the JSONL log
         with open(feedback_path, "a") as f:
             f.write(json.dumps(feedback_entry) + "\n")
             
         return {"status": "success", "message": "Feedback recorded for RL/Threshold tuning."}
-        
     except Exception as e:
-        logger.error(f"Failed to save active learning feedback: {e}")
-        return JSONResponse(status_code=500, content={"error": f"Failed to save feedback: {str(e)}"})
-# ─────────────────────────────────────────────────────────────────────────────
+        logger.error("Error saving feedback: %s", e)
+        return JSONResponse(status_code=500, content={"error": "Failed to record feedback"})
 
-# ── OPTION 3: THE LEARNING AGENT (DYNAMIC KNOWLEDGE BASE) ────────────────────
+# ── ON-DEMAND FIX GENERATION ─────────────────────────────────────────────────
+class GenerateFixRequest(BaseModel):
+    row_idx: int
+
+@app.post("/api/generate-fix/{session_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+def generate_fix(request: Request, session_id: str, payload: GenerateFixRequest):
+    try:
+        if not validate_session_id(session_id):
+            return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+            
+        changes = generate_counterfactual_for_row(session_id, payload.row_idx)
+        
+        if "error" in changes:
+            return JSONResponse(status_code=400, content=changes)
+            
+        return {"status": "success", "fix": changes}
+    except Exception as e:
+        logger.error("Error generating fix for %s: %s", session_id, e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/session/{session_id}/delete")
+@limiter.limit("5/minute")
+def delete_session(request: Request, session_id: str):
+    """
+    Called via navigator.sendBeacon from the frontend when the user refreshes/unloads the page.
+    Deletes the session directory completely.
+    """
+    try:
+        if not validate_session_id(session_id):
+            return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+            
+        session_dir = _session_dir(session_id)
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir, ignore_errors=True)
+            logger.info("Session %s deleted via frontend unload beacon.", session_id)
+            return {"status": "success", "message": "Session deleted"}
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    except Exception as e:
+        logger.error("Error deleting session %s: %s", session_id, e)
+        return JSONResponse(status_code=500, content={"error": "Failed to delete session"})
+
+# ── REINFORCEMENT LEARNING REMEDIATION ENGINE ──────────────────────────────────────────────────────
 class KnowledgeRule(BaseModel):
     term: str
     logic: str
@@ -122,13 +161,8 @@ class KnowledgeRule(BaseModel):
 @app.post("/api/knowledge/learn", dependencies=[Depends(require_api_key)])
 @limiter.limit("20/minute")
 def teach_agent(request: Request, payload: KnowledgeRule):
-    """
-    Phase 2.2: Knowledge Ingestion Endpoint.
-    Allows users to dynamically teach the agent new business logic.
-    """
     dict_path = os.path.join(_BACKEND_DIR, "data", "business_dictionary.json")
     
-    # Initialize or load existing KB
     if not os.path.exists(dict_path):
         kb_data = {"version": "2.0.0", "knowledge_base": {"user_defined": []}}
     else:
@@ -138,7 +172,6 @@ def teach_agent(request: Request, payload: KnowledgeRule):
     if "user_defined" not in kb_data["knowledge_base"]:
         kb_data["knowledge_base"]["user_defined"] = []
 
-    # Append the new rule
     new_rule = {
         "term": payload.term,
         "keywords": payload.keywords,
@@ -147,48 +180,40 @@ def teach_agent(request: Request, payload: KnowledgeRule):
     }
     kb_data["knowledge_base"]["user_defined"].append(new_rule)
 
-    # Save it permanently
     os.makedirs(os.path.dirname(dict_path), exist_ok=True)
     with open(dict_path, "w") as f:
         json.dump(kb_data, f, indent=2)
 
     return {"status": "success", "message": f"Agent successfully learned the rule for '{payload.term}'."}
-# ─────────────────────────────────────────────────────────────────────────────
 
-# ── STEP 4.1: LIVE DATABASE CONNECTOR ────────────────────────────────────────
+# ── LIVE DATABASE CONNECTOR ──────────────────────────────────────────────────
 class DBConnectionRequest(BaseModel):
-    uri: str  # Format: postgresql://user:pass@host:port/dbname
+    uri: str  
 
 @app.post("/api/connect-db/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
 def connect_postgres(request: Request, session_id: str, payload: DBConnectionRequest):
-    """Attach a live PostgreSQL instance to the current session."""
     try:
         validate_session_id(session_id)
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
 
-    # Basic security validation
     if not payload.uri.startswith(("postgres://", "postgresql://")):
         return JSONResponse(status_code=400, content={"error": "Only PostgreSQL URIs are supported in this version."})
 
     session_dir = _session_dir(session_id)
     config_path = os.path.join(session_dir, "db_config.json")
 
-    # Save the connection string securely in the session
     with open(config_path, "w") as f:
         json.dump({"db_uri": payload.uri, "type": "postgres"}, f)
 
-    return {"status": "success", "message": "PostgreSQL Database successfully linked. The AI Agent will now query this live database."}
-# ─────────────────────────────────────────────────────────────────────────────
+    return {"status": "success", "message": "PostgreSQL Database successfully linked."}
 
-# ── STEP 4.2: AUDIT LOG ENDPOINT ─────────────────────────────────────────────
+# ── AUDIT LOG ENDPOINT ───────────────────────────────────────────────────────
 @app.get("/api/admin/audit-logs", dependencies=[Depends(require_api_key)])
 @limiter.limit("30/minute")
 def get_audit_logs(request: Request, limit: int = Query(100)):
-    """Fetch the immutable audit trail of AI data mutations."""
     audit_file = os.path.join(_BACKEND_DIR, "logs", "audit_trail.jsonl")
-    
     if not os.path.exists(audit_file):
         return {"logs": []}
         
@@ -198,15 +223,11 @@ def get_audit_logs(request: Request, limit: int = Query(100)):
             for line in f:
                 if line.strip():
                     logs.append(json.loads(line))
-                    
-        # Return the most recent logs first
         return {"logs": list(reversed(logs))[:limit]}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"Failed to read logs: {str(e)}"})
-# ─────────────────────────────────────────────────────────────────────────────
 
-
-# --- CORS: environment-based whitelist instead of wildcard ---
+# --- CORS --------------------------------------------------------------------
 _ALLOWED_ORIGINS = os.getenv(
     "CORS_ORIGINS",
     "http://localhost:3000,http://127.0.0.1:3000",
@@ -220,33 +241,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/")
 def root():
     return {"status": "DataSentinel detection engine is online."}
 
-
 @app.get("/api/health")
 def health_check():
-    """Verify Groq Cloud API connectivity for the frontend."""
     from groq_client import check_groq_connectivity
-
     connected = check_groq_connectivity()
     return {"groq": connected, "engine": "Groq LPU Cloud"}
 
-import uuid
+
+# ── SESSION PURGE ENDPOINT (FOR PAGE REFRESH) ────────────────────────────────
+@app.delete("/api/session/{session_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("30/minute")
+def reset_session(request: Request, session_id: str):
+    """
+    Deletes the entire session directory. 
+    Called by the frontend when the user refreshes the page to ensure a sterile environment.
+    """
+    try:
+        validate_session_id(session_id)
+        session_dir = _session_dir(session_id)
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir, ignore_errors=True)
+            logger.info(f"Session {session_id} successfully purged due to user refresh.")
+            
+        if session_id in job_status:
+            del job_status[session_id]
+            
+        return {"status": "success", "message": "Session environment dumped and sterilized."}
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+
+
+# ── BACKGROUND JOB PROCESSOR ─────────────────────────────────────────────────
 job_status = {}
+def update_job_status(session_id: str, status: dict):
+    job_status[session_id] = status
+    if len(job_status) > 1000:
+        job_status.pop(next(iter(job_status)))
 
 def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: str, is_temp_file: bool = True):
     try:
-        job_status[session_id] = {"status": "Processing: Ingesting dataset", "progress": 10}
+        update_job_status(session_id, {"status": "Processing: Ingesting dataset", "progress": 10})
         
         result = process_and_detect(df=df, file_path=temp_file_path, session_id=session_id)
         
         if isinstance(result, dict) and result.get("status") == "error":
             error_msg = result.get("error") or "Detection pipeline failed with an unknown error."
             logger.error("Pipeline error for session '%s': %s", session_id, error_msg)
-            job_status[session_id] = {"status": "error", "error": error_msg}
+            update_job_status(session_id, {"status": "error", "error": error_msg})
             return
 
         if isinstance(result, dict) and result.get("session_id"):
@@ -270,10 +315,10 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
                     errf.write(traceback.format_exc())
                 logger.error(f"Failed to save detection_meta: {e}")
 
-        job_status[session_id] = {"status": "completed", "progress": 100, "result": result}
+        update_job_status(session_id, {"status": "completed", "progress": 100, "result": result})
     except Exception as e:
         logger.error(f"Background job failed: {str(e)}")
-        job_status[session_id] = {"status": "error", "error": str(e)}
+        update_job_status(session_id, {"status": "error", "error": str(e)})
     finally:
         if is_temp_file and temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
@@ -286,114 +331,89 @@ def get_status(request: Request, session_id: str):
     return job_status[session_id]
 
 
-
+# ── SMART UPLOAD ENDPOINT ────────────────────────────────────────────────────
 @app.post("/api/upload/", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
-async def upload_csv(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    # Clean up stale sessions (>24h old) instead of nuking everything
-    cleanup_stale_sessions(max_age_hours=24)
+async def upload_csv(
+    request: Request, 
+    background_tasks: BackgroundTasks, 
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None)  # Intercept existing session_id from frontend
+):
+    # Clean up stale sessions (>24h old) in the background
+    background_tasks.add_task(cleanup_stale_sessions, 24)
 
     os.makedirs(os.path.join(_BACKEND_DIR, "temp_uploads"), exist_ok=True)
-    # BUG-07 FIX: Sanitize filename to prevent path traversal attacks (e.g. ../../etc/passwd)
     safe_filename = os.path.basename(file.filename or "upload.bin")
     if not safe_filename:
         safe_filename = "upload.bin"
     temp_file_path = os.path.join(_BACKEND_DIR, "temp_uploads", safe_filename)
 
     try:
-        # SAFE-01 FIX: Reject files over 500MB before writing to disk (prevents OOM)
         MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
         
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > MAX_UPLOAD_BYTES:
             return JSONResponse(
                 status_code=413,
-                content={
-                    "error": f"File too large ({int(content_length) // (1024*1024)} MB). Maximum upload size is 500 MB."
-                },
+                content={"error": f"File too large ({int(content_length) // (1024*1024)} MB). Maximum upload size is 500 MB."}
             )
 
-        contents = await file.read()
-
-        if len(contents) > MAX_UPLOAD_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={
-                    "error": f"File too large ({len(contents) // (1024*1024)} MB). Maximum upload size is 500 MB."
-                },
-            )
-
+        size = 0
         with open(temp_file_path, "wb") as f:
-            f.write(contents)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    f.close()
+                    os.remove(temp_file_path)
+                    return JSONResponse(
+                        status_code=413,
+                        content={"error": f"File too large. Maximum upload size is 500 MB."}
+                    )
+                f.write(chunk)
 
-        # ── MULTI-FORMAT PARSER ──────────────────────────────────────────────
         filename_lower = safe_filename.lower()
         df = None
 
-        # 1. Handle WASM Edge Parquet Payload
         if filename_lower.endswith(".parquet"):
             try:
                 df = pl.read_parquet(temp_file_path)
-                logger.info("Parsed Secure Parquet payload: %s", file.filename)
             except Exception as e:
-                return JSONResponse(
-                    status_code=400, content={"error": f"Parquet parse failed: {str(e)}"}
-                )
-
-        # 2. Handle Excel Fallback
+                return JSONResponse(status_code=400, content={"error": f"Parquet parse failed: {str(e)}"})
         elif filename_lower.endswith((".xlsx", ".xls")):
             try:
                 import pandas as pd
-
-                pandas_df = pd.read_excel(temp_file_path, engine="openpyxl")
-                df = pl.from_pandas(pandas_df)
-                logger.info("Parsed Excel file: %s", file.filename)
+                df = pl.from_pandas(pd.read_excel(temp_file_path, engine="openpyxl"))
             except Exception as e:
-                return JSONResponse(
-                    status_code=400, content={"error": f"Excel parse failed: {str(e)}"}
-                )
-
+                return JSONResponse(status_code=400, content={"error": f"Excel parse failed: {str(e)}"})
         elif filename_lower.endswith(".json"):
             try:
                 import pandas as pd
-
                 with open(temp_file_path, "r") as jf:
                     raw = json.load(jf)
                 if isinstance(raw, list):
                     df = pl.from_pandas(pd.DataFrame(raw))
                 elif isinstance(raw, dict):
-                    # Try common wrappers: {"data": [...]}
                     for key in ["data", "records", "rows", "items"]:
                         if key in raw and isinstance(raw[key], list):
                             df = pl.from_pandas(pd.DataFrame(raw[key]))
                             break
                 if df is None:
-                    return JSONResponse(
-                        status_code=400,
-                        content={
-                            "error": "JSON must be an array of objects or {data: [...]}."
-                        },
-                    )
-                logger.info("Parsed JSON file: %s", file.filename)
+                    return JSONResponse(status_code=400, content={"error": "JSON must be an array of objects or {data: [...]}."})
             except Exception as e:
-                return JSONResponse(
-                    status_code=400, content={"error": f"JSON parse failed: {str(e)}"}
-                )
-
+                return JSONResponse(status_code=400, content={"error": f"JSON parse failed: {str(e)}"})
         else:
-            # Default: CSV with resilient fallback
             try:
                 df = pl.read_csv(temp_file_path, infer_schema_length=1_000_000)
             except Exception:
                 try:
                     import pandas as pd
-
                     df = pl.from_pandas(pd.read_csv(temp_file_path, low_memory=False))
                 except Exception as inner_e:
-                    return JSONResponse(
-                        status_code=400,
-                        content={"error": f"Fatal read error (invalid or corrupted file): {str(inner_e)}"},
-                    )
+                    return JSONResponse(status_code=400, content={"error": f"Fatal read error: {str(inner_e)}"})
 
         validation = SchemaEnforcer.validate(df, dataset_name=file.filename)
         if not validation["valid"]:
@@ -402,13 +422,52 @@ async def upload_csv(request: Request, background_tasks: BackgroundTasks, file: 
                 content={"status": "rejected", "errors": validation["errors"]},
             )
 
-        session_id = str(uuid.uuid4())
-        job_status[session_id] = {"status": "started", "progress": 0}
-        
-        # Dispatch background task
-        background_tasks.add_task(process_background_job, session_id, df, temp_file_path, True)
+        # ── SMART SCHEMA VERSION CONTROL (JACCARD SIMILARITY) ────────────────
+        dataset_status = "first_upload"
+        active_session_id = str(uuid.uuid4())
 
-        return {"session_id": session_id, "status": "processing"}
+        if session_id:
+            try:
+                validate_session_id(session_id)
+                session_dir = _session_dir(session_id)
+                metadata_path = os.path.join(session_dir, "metadata.json")
+                
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r") as mf:
+                        old_meta = json.load(mf)
+                    
+                    old_cols = set(old_meta.get("columns", []))
+                    new_cols = set(df.columns)
+                    
+                    if old_cols and new_cols:
+                        intersection = len(old_cols.intersection(new_cols))
+                        union = len(old_cols.union(new_cols))
+                        jaccard_sim = intersection / union
+                        
+                        if jaccard_sim >= 0.75:
+                            dataset_status = "updated"
+                            active_session_id = session_id
+                            logger.info(f"Smart Upload: Schema similarity {jaccard_sim:.2f}. Updating session {active_session_id}.")
+                        else:
+                            dataset_status = "new"
+                            logger.info(f"Smart Upload: Schema similarity {jaccard_sim:.2f}. Pivot detected. Purging old session.")
+                            # Wipe the old session to prevent contamination
+                            shutil.rmtree(session_dir, ignore_errors=True)
+                            if session_id in job_status:
+                                del job_status[session_id]
+                            # active_session_id remains the newly generated UUID
+            except Exception as e:
+                logger.warning(f"Schema comparison failed: {e}")
+
+        # ── DISPATCH BACKGROUND JOB ──────────────────────────────────────────
+        update_job_status(active_session_id, {"status": "started", "progress": 0})
+        background_tasks.add_task(process_background_job, active_session_id, df, temp_file_path, True)
+
+        return {
+            "session_id": active_session_id, 
+            "status": "processing", 
+            "dataset_status": dataset_status
+        }
 
     except Exception as e:
         logger.error("Upload failed: %s", e)
@@ -417,11 +476,11 @@ async def upload_csv(request: Request, background_tasks: BackgroundTasks, file: 
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# ── NEW: PII SCANNER ROUTES ──────────────────────────────────────────────────
+# ── DATA RETRIEVAL & OPERATION ROUTES ────────────────────────────────────────
+
 @app.get("/api/pii-scan/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
 def pii_scan(request: Request, session_id: str):
-    """Run PII detection on the uploaded dataset before analysis."""
     try:
         validate_session_id(session_id)
     except ValueError:
@@ -441,7 +500,6 @@ def pii_scan(request: Request, session_id: str):
 @app.post("/api/pseudonymise/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("60/minute")
 def pseudonymise(request: Request, session_id: str, columns: list[str]):
-    """Hash-pseudonymise specified PII columns in the stored dataset."""
     try:
         validate_session_id(session_id)
     except ValueError:
@@ -455,11 +513,8 @@ def pseudonymise(request: Request, session_id: str, columns: list[str]):
 
     df = pl.read_parquet(raw_path)
     df = pseudonymise_columns(df, columns)
-
-    # Overwrite the raw data with the safe, hashed version
     df.write_parquet(raw_path)
 
-    # Re-run detection to update anomaly scores with hashed data
     result = process_and_detect(df=df, session_id=session_id)
 
     return {
@@ -468,7 +523,6 @@ def pseudonymise(request: Request, session_id: str, columns: list[str]):
         "message": f"Salted SHA-256 pseudonymisation applied to {len(columns)} columns.",
         "detection_result": result,
     }
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 @app.get("/api/data/{session_id}", dependencies=[Depends(require_api_key)])
@@ -486,11 +540,7 @@ def get_data(
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
 
     session_dir = _session_dir(session_id)
-
-    if is_cleaned:
-        parquet_path = f"{session_dir}/cleaned_data.parquet"
-    else:
-        parquet_path = f"{session_dir}/raw_data.parquet"
+    parquet_path = f"{session_dir}/cleaned_data.parquet" if is_cleaned else f"{session_dir}/raw_data.parquet"
 
     if not os.path.exists(parquet_path):
         return JSONResponse(status_code=404, content={"error": "Data not found"})
@@ -500,8 +550,6 @@ def get_data(
     total_anomalies = 0
     if "is_anomaly" in df.columns:
         anomalies = df.filter(pl.col("is_anomaly") == True)
-
-        # Sort anomalies by Threat_Score descending so that the top severe ones (which have SHAP/AI reasoning) appear first on the UI
         if "Threat_Score" in anomalies.columns:
             anomalies = anomalies.sort("Threat_Score", descending=True)
 
@@ -509,13 +557,11 @@ def get_data(
         if only_anomalies:
             df = anomalies
 
-    # Prevent out of memory errors by capping json payload
     total_rows = len(df)
     if total_rows > limit:
         df = df.head(limit)
 
-    # Load drift + recommendation metadata saved at upload time
-    detection_meta: dict = {}
+    detection_meta = {}
     meta_path = os.path.join(session_dir, "detection_meta.json")
     if os.path.exists(meta_path):
         try:
@@ -527,7 +573,7 @@ def get_data(
     return {
         "data": df.to_dicts(),
         "total_anomalies": total_anomalies,
-        "total_rows": total_rows,  # To let frontend know actual count
+        "total_rows": total_rows,
         "drift_report": detection_meta.get("drift_report"),
         "recommendation": detection_meta.get("recommendation"),
     }
@@ -536,18 +582,12 @@ def get_data(
 @app.post("/api/clean/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
 def clean_data(request: Request, session_id: str, action: str = Query("quarantine")):
-    """
-    Executes the specified cleaning policy.
-    Supports: drop, quarantine, winsorize, mask, impute (RL Agent)
-    """
     try:
         validate_session_id(session_id)
     except ValueError:
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
 
-    # Dispatch to our hardened cleaning engine
     result = clean_dataset(session_id, action)
-    
     if "error" in result:
         return JSONResponse(status_code=400, content=result)
     return result
@@ -566,15 +606,9 @@ def compare_data(request: Request, session_id: str):
     clean_path = f"{session_dir}/cleaned_data.parquet"
 
     if not os.path.exists(clean_path):
-        return JSONResponse(
-            status_code=400, content={"error": "No cleaned data found."}
-        )
-    # SAFE-03 FIX: Also verify the raw data file exists before reading it
+        return JSONResponse(status_code=400, content={"error": "No cleaned data found."})
     if not os.path.exists(raw_path):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Raw dataset not found. Session may be corrupted."},
-        )
+        return JSONResponse(status_code=400, content={"error": "Raw dataset not found. Session may be corrupted."})
 
     df_raw = pl.read_parquet(raw_path)
     df_clean = pl.read_parquet(clean_path)
@@ -582,19 +616,12 @@ def compare_data(request: Request, session_id: str):
     is_dropped = len(df_clean) < len(df_raw)
 
     internal_cols = {"is_anomaly", "Threat_Score", "AI_Reason"}
-    engineered_suffixes = (
-        "_freq",
-        "_length",
-        "_digit_ratio",
-        "_upper_ratio",
-        "_special_ratio",
-    )
+    engineered_suffixes = ("_freq", "_length", "_digit_ratio", "_upper_ratio", "_special_ratio")
     engineered_prefixes = ("nlp_pc",)
     velocity_names = {"velocity_24h_sum", "velocity_1h_count"}
 
     cols_to_drop = [
-        c
-        for c in df_raw.columns
+        c for c in df_raw.columns
         if c in internal_cols
         or c.endswith(engineered_suffixes)
         or any(c.startswith(p) for p in engineered_prefixes)
@@ -602,7 +629,6 @@ def compare_data(request: Request, session_id: str):
     ]
     df_raw_clean_view = df_raw.drop([c for c in cols_to_drop if c in df_raw.columns])
 
-    # Find rows that actually changed in user-facing columns
     if is_dropped:
         return {
             "is_dropped": True,
@@ -685,7 +711,6 @@ def download_report_pdf(request: Request, session_id: str):
         
     try:
         from reportlab.pdfgen import canvas
-        import io
         buffer = io.BytesIO()
         c = canvas.Canvas(buffer)
         c.drawString(100, 800, "DataSentinel Quality Report")
@@ -738,33 +763,23 @@ def download_data(request: Request, session_id: str, source: str = Query("cleane
         csv_filename = "cleaned_data.csv"
 
     if not os.path.exists(parquet_path):
-        return JSONResponse(
-            status_code=404, content={"error": f"No {source} data found."}
-        )
+        return JSONResponse(status_code=404, content={"error": f"No {source} data found."})
 
     df = pl.read_parquet(parquet_path)
 
-    # ── FIX 1: AGGRESSIVE WIPE LIST FOR GODMODE FEATURES ──
     internal_cols_set = {
         "is_anomaly", "Threat_Score", "AI_Reason", "SHAP_Payload", 
         "Counterfactual_Payload", "lof_score", "lstm_anomaly_score", "ecod_score",
-        "Uncertainty_Score" # Clean up the active learning data
+        "Uncertainty_Score", "Consensus_Verdict"
     }
-    engineered_suffixes = (
-        "_freq",
-        "_length",
-        "_digit_ratio",
-        "_upper_ratio",
-        "_special_ratio",
-    )
+    engineered_suffixes = ("_freq", "_length", "_digit_ratio", "_upper_ratio", "_special_ratio")
     engineered_prefixes = ("nlp_pc",)
     velocity_names = {"velocity_24h_sum", "velocity_1h_count"}
     
     cols_to_drop = [
-        c
-        for c in df.columns
+        c for c in df.columns
         if c in internal_cols_set
-        or c.startswith("Score_CI")  # Safeguard for hidden Scikit-Learn/PyOD CI columns
+        or c.startswith("Score_CI")  
         or c.endswith(engineered_suffixes)
         or any(c.startswith(p) for p in engineered_prefixes)
         or c in velocity_names
@@ -772,10 +787,9 @@ def download_data(request: Request, session_id: str, source: str = Query("cleane
     if cols_to_drop:
         df = df.drop([c for c in cols_to_drop if c in df.columns])
 
-    # ── FIX 2: IN-MEMORY STREAMING (BYPASSES WINDOWS FILE-SYNC CRASH) ──
     buffer = io.BytesIO()
     df.write_csv(buffer)
-    buffer.seek(0) # Rewind the buffer so FastAPI can read it from the beginning
+    buffer.seek(0) 
 
     return StreamingResponse(
         buffer, 
@@ -806,6 +820,7 @@ def get_quarantine(request: Request, session_id: str, limit: int = Query(1000)):
 
     return {"data": df.to_dicts(), "count": total_count}
 
+
 @app.post("/api/query/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("20/minute")
 async def query_data(
@@ -820,8 +835,6 @@ async def query_data(
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
 
     is_edit = mode == "edit"
-    
-    # We now return a StreamingResponse that yields Server-Sent Events
     return StreamingResponse(
         execute_natural_query_stream(session_id, user_query, is_edit=is_edit),
         media_type="text/event-stream"
@@ -841,10 +854,9 @@ def confirm_edit(request: Request, session_id: str, sql_query: str = Query(...))
     return result
 
 
-@app.get("/api/samples")  # Public — no auth required
+@app.get("/api/samples")  
 @limiter.limit("120/minute")
 def list_samples(request: Request):
-    """Returns available built-in sample datasets."""
     data_dir = os.path.join(_BACKEND_DIR, "data")
     samples = []
     descriptions = {
@@ -880,8 +892,6 @@ def list_samples(request: Request):
 @app.post("/api/load-sample/{filename}", dependencies=[Depends(require_api_key)])
 @limiter.limit("10/minute")
 async def load_sample(request: Request, filename: str, background_tasks: BackgroundTasks):
-    """Loads a built-in sample dataset through the full detection pipeline."""
-    # Sanitise filename — only allow known files
     allowed = {"fraud_transactions.csv", "patient_vitals.csv", "ecommerce_reviews.csv"}
     if filename not in allowed:
         return JSONResponse(status_code=400, content={"error": "Unknown sample file."})
@@ -900,11 +910,11 @@ async def load_sample(request: Request, filename: str, background_tasks: Backgro
                 status_code=400, content={"errors": validation["errors"]}
             )
         session_id = str(uuid.uuid4())
-        job_status[session_id] = {"status": "started", "progress": 0}
+        update_job_status(session_id, {"status": "started", "progress": 0})
         
         background_tasks.add_task(process_background_job, session_id, df, file_path, False)
         
-        return {"session_id": session_id, "status": "processing"}
+        return {"session_id": session_id, "status": "processing", "dataset_status": "first_upload"}
     except Exception as e:
         logger.error("Sample load failed: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e)})

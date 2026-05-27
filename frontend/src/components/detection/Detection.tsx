@@ -15,6 +15,8 @@ import {
   GitBranch,
   Wand2,
 } from 'lucide-react';
+import { useState } from 'react';
+import api from '@/services/api.service';
 import { useDetection } from '@/hooks/use-detection';
 
 /* ─── Types ──────────────────────────────────────────────────────────────────────────────── */
@@ -91,6 +93,26 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
     driftReport,
     recommendation,
   } = useDetection(sessionId);
+
+  const [loadingFixes, setLoadingFixes] = useState<Record<number, boolean>>({});
+  const [generatedFixes, setGeneratedFixes] = useState<Record<number, string>>({});
+
+  const handleGenerateFix = async (originalIdx: number) => {
+    setLoadingFixes(prev => ({ ...prev, [originalIdx]: true }));
+    try {
+      const res = await api.post(`/api/generate-fix/${sessionId}`, { row_idx: originalIdx });
+      const json = res.data;
+      if (json.status === 'success' && json.fix) {
+        setGeneratedFixes(prev => ({ ...prev, [originalIdx]: JSON.stringify(json.fix) }));
+      } else {
+        alert(`Failed to generate fix: ${json.error}`);
+      }
+    } catch (e) {
+      alert(`Error generating fix: ${e}`);
+    } finally {
+      setLoadingFixes(prev => ({ ...prev, [originalIdx]: false }));
+    }
+  };
 
   if (isLoading) {
     return (
@@ -248,7 +270,8 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                   const originalIdx = data.indexOf(row);
 
                   const shapData = parseShapPayload(row.SHAP_Payload as string);
-                  const cfData = parseCounterfactualPayload(row.Counterfactual_Payload as string);
+                  const rawCfData = generatedFixes[originalIdx] || row.Counterfactual_Payload;
+                  const cfData = parseCounterfactualPayload(rawCfData as string);
 
                   // ── BUILD THE RAW SNAPSHOT ──
                   const rowData: Record<string, unknown> = {};
@@ -392,7 +415,7 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                           )}
 
                           {/* ── DiCE Counterfactual Explanations UI ── */}
-                          {cfData && Object.keys(cfData).length > 0 && (
+                          {cfData && Object.keys(cfData).length > 0 ? (
                             <div className="bg-[#050505] border border-blue-900/40 rounded-xl p-4 relative overflow-hidden mt-3">
                               <div className="absolute left-0 top-0 w-1 h-full bg-blue-500/50 rounded-l-xl" />
                               <h5 className="text-[10px] font-bold text-blue-400 uppercase tracking-widest mb-3 flex items-center">
@@ -422,6 +445,21 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                               <p className="text-[10px] text-neutral-600 mt-3 italic">
                                 If these values were different, this row would not have been flagged.
                               </p>
+                            </div>
+                          ) : (
+                            <div className="mt-3">
+                              <button
+                                onClick={() => handleGenerateFix(originalIdx)}
+                                disabled={loadingFixes[originalIdx]}
+                                className="flex items-center space-x-2 text-xs font-bold text-blue-400 bg-blue-500/10 border border-blue-900/50 px-4 py-2 rounded-lg hover:bg-blue-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {loadingFixes[originalIdx] ? (
+                                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mr-1" />
+                                ) : (
+                                  <Wand2 className="w-4 h-4" />
+                                )}
+                                <span>{loadingFixes[originalIdx] ? "Generating Fix..." : "Generate Fix"}</span>
+                              </button>
                             </div>
                           )}
 

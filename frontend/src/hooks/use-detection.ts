@@ -121,10 +121,9 @@ export function useDetection(sessionId: string) {
 
   const submitFeedback = async (row: AnomalyRow, idx: number, isCorrect: boolean) => {
     try {
-      await api.post('/api/feedback/', {
-        session_id: sessionId,
-        row_data: row,
-        is_correct: isCorrect,
+      await api.post(`/api/feedback/${sessionId}`, {
+        row_index: idx,
+        label: isCorrect ? 1 : 0,
       });
       setFeedbackMap((prev) => ({ ...prev, [idx]: isCorrect ? 'correct' : 'incorrect' }));
     } catch (e) {

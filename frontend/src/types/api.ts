@@ -156,22 +156,6 @@ export interface VizData {
   health_score: number;
 }
 
-export interface QueryExploreResponse {
-  sql: string;
-  columns: string[];
-  data: Record<string, unknown>[];
-}
-
-export interface QueryEditResponse {
-  sql: string;
-}
-
-export interface EditConfirmResponse {
-  status: string;
-  rows_affected: number;
-  columns: string[];
-  preview_data: Record<string, unknown>[];
-}
 
 export interface QuarantineResponse {
   data: AnomalyRow[];

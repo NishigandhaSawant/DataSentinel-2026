@@ -21,17 +21,15 @@ logger = logging.getLogger("datasentinel")
 # --- BACKEND ROOT ---
 _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# --- UUID VALIDATION ---
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
-
+import uuid
 
 def validate_session_id(session_id: str) -> str:
     """Validate that a session ID is a well-formed UUID to prevent path traversal."""
-    if not _UUID_RE.match(session_id):
+    try:
+        val = uuid.UUID(session_id)
+        return str(val)
+    except ValueError:
         raise ValueError(f"Invalid session ID format: {session_id}")
-    return session_id
 
 
 def _session_dir(session_id: str) -> str:

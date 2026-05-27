@@ -156,7 +156,8 @@ def apply_rl_cleaning(df: pl.DataFrame, session_id: str) -> dict:
             pandas_df[col] = pandas_df[col].fillna(pandas_df[col].median())
         elif action == 2:
             try:
-                # KNN requires 2D array, we use the column itself + a dummy to keep it fast
+                if pandas_df[col].isna().all():
+                    raise ValueError("Column is entirely NaN, KNNImputer cannot fit.")
                 imputer = KNNImputer(n_neighbors=3)
                 pandas_df[col] = imputer.fit_transform(pandas_df[[col]])
             except Exception:

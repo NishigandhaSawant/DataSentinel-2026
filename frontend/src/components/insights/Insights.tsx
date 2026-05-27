@@ -686,13 +686,13 @@ export default function Insights({ sessionId, cachedInsights, onInsightsLoaded }
 
             {/* WEEK 4 TOP DASHBOARD METRICS */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {lineage_topology && (
+                {lineage_topology && lineage_topology.status !== "skipped" && (
                     <div className={trust_metrics ? "lg:col-span-2" : "lg:col-span-3"}>
                         <LineageDriftCard topology={lineage_topology} />
                     </div>
                 )}
                 {trust_metrics && (
-                    <div className={lineage_topology ? "lg:col-span-1" : "lg:col-span-3"}>
+                    <div className={lineage_topology && lineage_topology.status !== "skipped" ? "lg:col-span-1" : "lg:col-span-3"}>
                         <HumanTrustCard metrics={trust_metrics} />
                     </div>
                 )}

@@ -1382,76 +1382,17 @@ def _stage_explain(ctx: PipelineContext) -> PipelineContext:
                     for idx in stat_idxs:
                         ctx.causal_payloads[idx] = causal_results.get(idx, "[]")
                 else:
-                    for idx, payload in zip(stat_idxs, causal_results):
-                        if payload:
-                            ctx.causal_payloads[idx] = payload
+                    for idx in stat_idxs:
+                        if causal_results[idx]:
+                            ctx.causal_payloads[idx] = causal_results[idx]
 
         except (ValueError, RuntimeError) as e:
             logger.warning("Causal RCA failed: %s", e)
 
     # --- DiCE Counterfactuals  (restored from v4.1) ---
     ctx.cf_payloads = ["{}"] * n
-    try:
-        import dice_ml  # type: ignore
-
-        if ctx.model is not None and ctx.is_anomaly.any():
-            logger.info("Generating DiCE counterfactuals...")
-
-            class _IFWrapper:
-                def __init__(self, m: IsolationForest, thresh: float):
-                    self.m, self.thresh = m, thresh
-                def predict(self, X: Any) -> np.ndarray:
-                    arr = X.values if hasattr(X, "values") else np.asarray(X)
-                    return (-self.m.decision_function(arr) > self.thresh).astype(int)
-                def predict_proba(self, X: Any) -> np.ndarray:
-                    arr = X.values if hasattr(X, "values") else np.asarray(X)
-                    scores = -self.m.decision_function(arr)
-                    p1 = 1.0 / (1.0 + np.exp(np.clip(-(scores - self.thresh) * 10.0, -100, 100)))
-                    return np.column_stack((1 - p1, p1))
-
-            cf_df = ctx.encoded_df.copy().astype(float)
-            cf_df["_target"] = ctx.is_anomaly.astype(int)
-
-            dice_data = dice_ml.Data(
-                dataframe=cf_df,
-                continuous_features=cf_df.drop(columns=["_target"]).columns.tolist(),
-                outcome_name="_target",
-            )
-            exp = dice_ml.Dice(
-                dice_data,
-                dice_ml.Model(model=_IFWrapper(ctx.model, ctx.threshold), backend="sklearn"),
-                method="random",
-            )
-
-            cf_targets = [
-                int(i) for i in np.where(ctx.is_anomaly)[0]
-                if i not in ctx.logic_flag_set
-            ][:ctx.cfg.dice_max_rows]
-
-            for orig_idx in cf_targets:
-                try:
-                    query     = ctx.encoded_df.iloc[[orig_idx]].astype(float)
-                    cf_result = exp.generate_counterfactuals(
-                        query, total_CFs=1, desired_class="opposite", verbose=False
-                    )
-                    cf_dict      = cf_result.cf_examples_list[0].final_cfs_df.iloc[0].to_dict()
-                    original_row = ctx.encoded_df.iloc[orig_idx].to_dict()
-                    changes = {
-                        k: {"from": round(float(original_row[k]), 4), "to": round(float(v), 4)}
-                        for k, v in cf_dict.items()
-                        if k != "_target"
-                        and abs(float(v) - float(original_row.get(k, 0))) > 1e-4
-                    }
-                    ctx.cf_payloads[orig_idx] = json.dumps(changes)
-                except Exception as e:
-                    logger.debug("Row %s counterfactual failed: %s", orig_idx, e)
-
-            logger.info("DiCE counterfactuals generated for %d rows.", len(cf_targets))
-
-    except ImportError:
-        logger.info("DiCE not installed — skipping. pip install dice-ml to enable.")
-    except Exception as e:
-        logger.warning("DiCE failed: %s", e)
+    # DiCE disabled in the main loop to speed up uploads.
+    # It will be executed on-demand via the /api/generate-fix endpoint.
 
     # --- Threat Scoring ---
     # Supervised path  (XGBoost / HistGB, restored from v4.1, guarded for < 2 classes)
@@ -1587,6 +1528,12 @@ def _stage_persist(ctx: PipelineContext) -> PipelineContext:
 
     ctx.raw_parquet_path = f"{ctx.session_dir}/raw_data.parquet"
     ctx.df.write_parquet(ctx.raw_parquet_path)
+    
+    if ctx.encoded_df is not None:
+        ctx.encoded_df.to_parquet(f"{ctx.session_dir}/encoded_data.parquet")
+        
+    if ctx.model is not None and JOBLIB_AVAILABLE:
+        joblib.dump(ctx.model, f"{ctx.models_dir}/iforest.joblib")
 
     # --- Classical KS drift detection with baseline save/load  (v4.1 — restored) ---
     _MAX_DRIFT_SAMPLES = 10_000
@@ -1808,3 +1755,161 @@ def process_and_detect(
             "trust_metrics":        {},
             "error":                str(e),
         }
+
+# ---------------------------------------------------------------------------
+# ON-DEMAND DICE COUNTERFACTUAL ENGINE (Phase 2)
+# ---------------------------------------------------------------------------
+
+def generate_counterfactual_for_row(session_id: str, row_idx: int) -> dict:
+    """Standalone, on-demand execution of DiCE for a single row."""
+    session_dir = _session_dir(session_id)
+    models_dir = os.path.join(session_dir, "models")
+    
+    encoded_path = os.path.join(session_dir, "encoded_data.parquet")
+    meta_path = os.path.join(session_dir, "metadata.json")
+    model_path = os.path.join(models_dir, "iforest.joblib")
+    
+    if not os.path.exists(encoded_path) or not os.path.exists(model_path):
+        raise FileNotFoundError("Missing cached model or encoded data. Cannot generate fix.")
+        
+    encoded_df = pd.read_parquet(encoded_path)
+    
+    if not JOBLIB_AVAILABLE:
+        raise ImportError("joblib is required to load the model.")
+        
+    model = joblib.load(model_path)
+    
+    with open(meta_path) as f:
+        meta = json.load(f)
+        thresh = meta.get("threshold", 0.0)
+        
+    try:
+        import dice_ml # type: ignore
+    except ImportError:
+        raise ImportError("DiCE not installed. pip install dice-ml to enable.")
+        
+    raw_path = os.path.join(session_dir, "raw_data.parquet")
+    if not os.path.exists(raw_path):
+        raise FileNotFoundError("Missing raw data. Cannot generate fix.")
+    raw_df = pd.read_parquet(raw_path)
+    
+    # We must compute an optimal threshold for the raw Isolation Forest scores
+    # because the 'thresh' from metadata.json is the ensemble consensus threshold!
+    scores = -model.decision_function(encoded_df.values)
+    is_anomaly_gt = raw_df["is_anomaly"].values.astype(int)
+    
+    normal_scores = scores[is_anomaly_gt == 0]
+    if len(normal_scores) > 0:
+        optimal_thresh = float(np.percentile(normal_scores, 95))
+    else:
+        optimal_thresh = float(np.median(scores))
+        
+    # Ensure the target row is considered an anomaly by this isolated model
+    if scores[row_idx] <= optimal_thresh:
+        optimal_thresh = float(scores[row_idx] - 1e-5)
+        
+    is_anomaly = (scores > optimal_thresh).astype(int)
+    
+    cf_df = encoded_df.copy().astype(float)
+    cf_df["_target"] = is_anomaly
+    
+    query = encoded_df.iloc[[row_idx]].astype(float)
+    continuous_features = encoded_df.columns.tolist()
+        
+    features_to_vary = "all"
+    shap_payload_str = raw_df.iloc[row_idx].get("SHAP_Payload", "[]")
+    if shap_payload_str and isinstance(shap_payload_str, str) and shap_payload_str != "[]":
+        try:
+            shap_data = json.loads(shap_payload_str)
+            features_to_vary = [
+                item["feature"] for item in shap_data 
+                if item.get("impact", 0) > 0 and item["feature"] in continuous_features
+            ]
+            if not features_to_vary:
+                features_to_vary = "all"
+        except Exception:
+            pass
+
+    # Restrict input dimensions for DiCE to prevent timeout/failure
+    if features_to_vary != "all":
+        # Subset dataframe so DiCE only explores anomalous dimensions
+        cf_df = cf_df[features_to_vary + ["_target"]]
+        query_subset = query[features_to_vary]
+        
+        class _IFWrapper:
+            def __init__(self, m: IsolationForest, thresh: float, base_row: np.ndarray, col_idx: list[int]):
+                self.m, self.thresh = m, thresh
+                self.base_row = base_row
+                self.col_idx = col_idx
+                
+            def _reconstruct(self, X: Any) -> np.ndarray:
+                arr = X.values if hasattr(X, "values") else np.asarray(X)
+                full = np.tile(self.base_row, (arr.shape[0], 1))
+                for i, c_idx in enumerate(self.col_idx):
+                    full[:, c_idx] = arr[:, i]
+                return full
+                
+            def predict(self, X: Any) -> np.ndarray:
+                full = self._reconstruct(X)
+                return (-self.m.decision_function(full) > self.thresh).astype(int)
+                
+            def predict_proba(self, X: Any) -> np.ndarray:
+                full = self._reconstruct(X)
+                s = -self.m.decision_function(full)
+                p1 = 1.0 / (1.0 + np.exp(np.clip(-(s - self.thresh) * 10.0, -100, 100)))
+                return np.column_stack((1 - p1, p1))
+                
+        base_row = query.values[0]
+        col_idx = [encoded_df.columns.get_loc(c) for c in features_to_vary]
+        wrapped_model = _IFWrapper(model, optimal_thresh, base_row, col_idx)
+    else:
+        query_subset = query
+        class _IFWrapperAll:
+            def __init__(self, m: IsolationForest, thresh: float):
+                self.m, self.thresh = m, thresh
+            def predict(self, X: Any) -> np.ndarray:
+                arr = X.values if hasattr(X, "values") else np.asarray(X)
+                return (-self.m.decision_function(arr) > self.thresh).astype(int)
+            def predict_proba(self, X: Any) -> np.ndarray:
+                arr = X.values if hasattr(X, "values") else np.asarray(X)
+                s = -self.m.decision_function(arr)
+                p1 = 1.0 / (1.0 + np.exp(np.clip(-(s - self.thresh) * 10.0, -100, 100)))
+                return np.column_stack((1 - p1, p1))
+        wrapped_model = _IFWrapperAll(model, optimal_thresh)
+        
+    dice_data = dice_ml.Data(
+        dataframe=cf_df,
+        continuous_features=cf_df.drop(columns=["_target"]).columns.tolist(),
+        outcome_name="_target",
+    )
+    exp = dice_ml.Dice(
+        dice_data,
+        dice_ml.Model(model=wrapped_model, backend="sklearn"),
+        method="random",
+    )
+
+    import warnings
+    from pandas.errors import PerformanceWarning
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter(action='ignore', category=PerformanceWarning)
+        cf_result = exp.generate_counterfactuals(
+            query_subset, 
+            total_CFs=1, 
+            desired_class="opposite", 
+            features_to_vary="all" if features_to_vary == "all" else features_to_vary,
+            verbose=False
+        )
+    
+    if not cf_result.cf_examples_list or cf_result.cf_examples_list[0].final_cfs_df is None:
+        return {"error": "Could not generate counterfactual."}
+        
+    cf_dict = cf_result.cf_examples_list[0].final_cfs_df.iloc[0].to_dict()
+    original_row = encoded_df.iloc[row_idx].to_dict()
+    changes = {
+        k: {"from": round(float(original_row[k]), 4), "to": round(float(v), 4)}
+        for k, v in cf_dict.items()
+        if k != "_target"
+        and abs(float(v) - float(original_row.get(k, 0))) > 1e-4
+    }
+    return changes
