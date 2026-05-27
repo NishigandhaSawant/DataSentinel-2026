@@ -31,6 +31,12 @@
 
 ---
 
+## 📖 About DataSentinel
+
+DataSentinel is an advanced, AI-driven data quality and anomaly detection platform designed for data scientists, engineers, and analysts. It streamlines the often tedious process of data cleaning and validation by providing an autonomous, multi-agent pipeline. Users can upload raw datasets and immediately benefit from powerful statistical models (like Isolation Forest and LSTM) working in tandem with natural language processing and neuro-symbolic logic. Beyond just finding errors, DataSentinel explains *why* anomalies occurred using causal reasoning (NOTEARS DAG) and offers smart, automated remediation strategies via Reinforcement Learning. With built-in PII vaulting and natural language querying powered by Groq and DuckDB, it acts as your intelligent, secure co-pilot for end-to-step data preparation.
+
+---
+
 ## ✨ Features
 
 | Category | Feature | Description |
