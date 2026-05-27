@@ -305,6 +305,8 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
                             "drift_report": result.get("drift_report"),
                             "recommendation": result.get("recommendation"),
                             "trust_metrics": result.get("trust_metrics"),
+                            "recommended_cleaning": result.get("recommended_cleaning"),
+                            "cleaning_rationale": result.get("cleaning_rationale"),
                         },
                         _mf,
                         cls=NumpyEncoder
@@ -327,6 +329,26 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
 @limiter.limit("120/minute")
 def get_status(request: Request, session_id: str):
     if session_id not in job_status:
+        try:
+            validate_session_id(session_id)
+            meta_path = os.path.join(_session_dir(session_id), "detection_meta.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                return {
+                    "status": "completed",
+                    "progress": 100,
+                    "result": {
+                        "recommended_cleaning": meta.get("recommended_cleaning"),
+                        "cleaning_rationale": meta.get("cleaning_rationale"),
+                        "recommendation": meta.get("recommendation"),
+                        "drift_report": meta.get("drift_report"),
+                        "trust_metrics": meta.get("trust_metrics"),
+                    }
+                }
+        except Exception:
+            pass
+            
         return JSONResponse(status_code=404, content={"error": "Session/Job not found"})
     return job_status[session_id]
 

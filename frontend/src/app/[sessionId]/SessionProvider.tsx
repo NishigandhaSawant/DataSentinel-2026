@@ -34,7 +34,7 @@ export function SessionProvider({ children, sessionId }: { children: React.React
         }
     }).catch((err) => {
         if (err.response?.status === 404) {
-            window.location.href = "/";
+            console.warn("Session status not found. It might be a new session or expired.");
         }
     });
   }, [sessionId, router]);
