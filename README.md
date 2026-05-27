@@ -149,68 +149,107 @@ The application opens at **http://localhost:3000**.
 
 ### Architecture Overview
 
-DataSentinel uses a **decoupled client-server architecture** with a multi-engine backend design:
+DataSentinel uses a **decoupled, 5-layer architecture** with a multi-agent AI engine core:
 
 ```mermaid
 graph TD
-    %% Browser Layer
-    subgraph Browser["BROWSER — Next.js 16 + React 19"]
+    %% ── LAYER 1: PRESENTATION ────────────────────────────────────
+    subgraph Presentation["🖥️ PRESENTATION LAYER — Next.js 16 + React 19"]
         direction LR
-        L["3D Landing<br>Three.js"]
+        L["3D Landing<br>(Three.js + GSAP)"]
+        U["Upload &<br>PII Modal"]
         D["Detection<br>Dashboard"]
-        I["Insights<br>Panel"]
-        C["Cleaning<br>Compare"]
-        Q["NL Query<br>(SSE Chat)"]
+        I["AI Insights"]
+        CL["Smart<br>Cleaning"]
+        CM["Compare<br>View"]
+        V["Visualizer<br>(Recharts)"]
+        Q["NL Query<br>Chat (SSE)"]
+        E["Export &<br>Report"]
     end
 
-    %% API Layer
-    Axios["Axios API Service + Auth Interceptor"]
-    Browser --> Axios
-    
-    %% Backend Layer
-    subgraph Backend["FastAPI Backend (Python 3.11+)"]
-        Gateway["API Gateway: Rate Limiting · Auth Guard · CORS"]
-        
-        subgraph Engines["AI & Processing Engines"]
+    HTTP["Axios HTTP Client + Auth Interceptor"]
+    Presentation --> HTTP
+
+    %% ── LAYER 2: API GATEWAY ─────────────────────────────────────
+    subgraph Gateway["🔒 API GATEWAY — FastAPI 0.115"]
+        direction LR
+        RL["Rate Limiter<br>(SlowAPI)"]
+        AG["Auth Guard<br>(API Key)"]
+        CO["CORS<br>Middleware"]
+        SM["Session Manager<br>(UUID)"]
+        BG["Background<br>Tasks"]
+    end
+
+    HTTP -- "REST / SSE" --> Gateway
+
+    %% ── LAYER 3: AI ENGINE CORE ──────────────────────────────────
+    subgraph Core["🧠 MULTI-AGENT AI ENGINE CORE"]
+        direction TB
+
+        subgraph Detection["Anomaly Detection"]
             direction LR
-            PII["PII Scanner<br>Regex+SHA256"]
-            Det["Detection<br>IF+LSTM+SHAP"]
-            Log["Logic Gate<br>Neuro-Symbolic"]
-            Drift["Drift & DiCE<br>KS-Test+Counterfactuals"]
-            Clean["Cleaning<br>Polars"]
-            Query["Query<br>DuckDB+Groq"]
-            Vis["Visualization<br>Engine"]
+            IF["Isolation Forest"]
+            LOF["LOF"]
+            ECOD["ECOD"]
+            LNN["LNN Autoencoder"]
+            LSTM["LSTM Autoencoder"]
         end
-        
-        Gateway --> PII
-        Gateway --> Det
-        Gateway --> Log
-        Gateway --> Drift
-        Gateway --> Clean
-        Gateway --> Query
-        Gateway --> Vis
-        
-        GroqClient["Groq Client: LLM wrapper with retry"]
-        Schema["Schema Enforcer: Data contract validation"]
-        Dict["Business Dictionary: RAG knowledge base"]
-        
-        Engines --> GroqClient
+
+        subgraph Reasoning["Causal Reasoning & Explainability"]
+            direction LR
+            RCA["Causal RCA<br>(NOTEARS DAG)"]
+            XGB["XGBoost Threat<br>Scorer (hist)"]
+            DICE["DiCE Counterfactual<br>Engine"]
+            NS["Neuro-Symbolic<br>Logic Gate"]
+        end
+
+        subgraph Intelligence["Adaptive Intelligence"]
+            direction LR
+            NLP["NLP Bridge<br>(TF-IDF + SVD)"]
+            RLC["RL Cleaner<br>(Q-Learning)"]
+            AL["Active Learning<br>(Trust Calibration)"]
+            GAE["Lineage GAE<br>(Drift Detection)"]
+        end
+
+        subgraph Services["Data Services"]
+            direction LR
+            PII["PII Scanner &<br>SHA-256 Vault"]
+            DDB["DuckDB SQL<br>Query Engine"]
+            VIZ["Visualization<br>Aggregator"]
+            QR["Quality Report<br>Generator"]
+        end
     end
-    
-    Axios -- "REST API / SSE" --> Gateway
-    
-    %% Storage Layer
-    subgraph Storage["Storage Layer"]
-        Session["💾 Session Storage<br>Parquet files"]
-        Audit["📝 Audit Trail<br>JSONL logs"]
+
+    Gateway --> Core
+
+    %% ── LAYER 4: DATA & STORAGE ──────────────────────────────────
+    subgraph Storage["💾 DATA & STORAGE LAYER"]
+        direction LR
+        PL["Polars DataFrame<br>Engine"]
+        SS["Session Storage<br>(Parquet)"]
+        AT["Audit Trail<br>(JSONL)"]
+        BD["Business Dictionary<br>(RAG)"]
+        MC["Model Cache<br>(Joblib)"]
     end
-    
-    Backend --> Storage
-    
-    %% External
-    GroqCloud["☁️ Groq Cloud LPU<br>Llama 3.3 70B"]
-    GroqClient -- "AI Inference" --> GroqCloud
+
+    Core --> Storage
+
+    %% ── LAYER 5: EXTERNAL SERVICES ───────────────────────────────
+    subgraph External["☁️ EXTERNAL SERVICES"]
+        direction LR
+        GROQ["Groq Cloud LPU<br>Llama 3.3 70B"]
+        PG["PostgreSQL<br>(Live DB Connect)"]
+    end
+
+    Core -- "AI Inference" --> GROQ
+    DDB -- "Live Query" --> PG
 ```
+
+> **Key Design Decisions:**
+> - The **Detection Engine** runs 5 models in parallel via `ThreadPoolExecutor` for maximum CPU throughput
+> - **Causal RCA** uses continuous DAG optimization (NOTEARS) instead of marginal SHAP for true root cause tracing
+> - **Active Learning** dynamically adjusts the Human Trust Score based on operator feedback loops
+> - All session data is stored as **Parquet** files with **Joblib**-cached models for instant reload
 
 ---
 
