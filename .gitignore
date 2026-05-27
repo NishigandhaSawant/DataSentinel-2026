@@ -75,3 +75,12 @@ dist/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Playwright MCP artifacts
+.playwright-mcp/
+
+# Build & lint logs
+*.log
+
+# Generated test artifacts
+*.pdf
