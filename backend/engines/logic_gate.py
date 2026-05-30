@@ -9,8 +9,9 @@ IEEE Novelty: Mitigates LLM hallucination by forcing strict AST-compliant SBVR p
 
 import os
 import json
+import hashlib
 import polars as pl
-from utils import logger
+from utils import logger, _BACKEND_DIR
 
 
 def _generate_sbvr_rules(df: pl.DataFrame) -> list:
@@ -27,6 +28,22 @@ def _generate_sbvr_rules(df: pl.DataFrame) -> list:
 
     if not schema_info:
         return []
+
+    # Cache mechanism
+    schema_hash = hashlib.md5(schema_str.encode("utf-8")).hexdigest()
+    cache_dir = os.path.join(_BACKEND_DIR, "data", "schemas")
+    cache_file = os.path.join(cache_dir, "logic_rules_cache.json")
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                cache = json.load(f)
+            if schema_hash in cache:
+                logger.info("Using cached SBVR logic rules for schema %s", schema_hash)
+                return cache[schema_hash]
+        except Exception as e:
+            logger.warning("Failed to read SBVR cache: %s", e)
 
     prompt = f"""You are an expert Data Governance Agent operating under strict IEEE neuro-symbolic standards.
 Given the following dataset schema, generate up to 5 universally true business rules to catch impossible data.
@@ -70,6 +87,18 @@ CRITICAL RULES:
 
         for r in rules:
             logger.info("SBVR Rule: %s", r.get('sbvr_statement'))
+
+        # Update cache
+        try:
+            cache = {}
+            if os.path.exists(cache_file):
+                with open(cache_file, "r") as f:
+                    cache = json.load(f)
+            cache[schema_hash] = rules
+            with open(cache_file, "w") as f:
+                json.dump(cache, f, indent=2)
+        except Exception as e:
+            logger.warning("Failed to write SBVR cache: %s", e)
 
         return rules
 

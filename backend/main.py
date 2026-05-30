@@ -130,6 +130,44 @@ def generate_fix(request: Request, session_id: str, payload: GenerateFixRequest)
         logger.error("Error generating fix for %s: %s", session_id, e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post("/api/explain/{session_id}", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+def explain_row(request: Request, session_id: str, payload: GenerateFixRequest):
+    try:
+        validate_session_id(session_id)
+        session_dir = _session_dir(session_id)
+        encoded_path = os.path.join(session_dir, "encoded_data.parquet")
+        
+        if not os.path.exists(encoded_path):
+            return JSONResponse(status_code=400, content={"error": "Encoded data not found. Cannot run causal RCA."})
+            
+        import pandas as pd
+        encoded_df = pd.read_parquet(encoded_path)
+        
+        global_stats = {
+            col: {"mean": encoded_df[col].mean(), "std": encoded_df[col].std()}
+            for col in encoded_df.columns
+        }
+        
+        from engines.causal_rca import generate_causal_payloads
+        causal_results = generate_causal_payloads(
+            encoded_df=encoded_df,
+            anomaly_indices=[payload.row_idx],
+            stats=global_stats,
+        )
+        
+        reason_payload = "[]"
+        if isinstance(causal_results, dict):
+            reason_payload = causal_results.get(payload.row_idx, "[]")
+        else:
+            reason_payload = causal_results[payload.row_idx]
+            
+        return {"status": "success", "causal_reasons": json.loads(reason_payload)}
+        
+    except Exception as e:
+        logger.error("Error generating explanation for %s: %s", session_id, e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post("/api/session/{session_id}/delete")
 @limiter.limit("60/minute")  # raised: rapid beacon retries must not be 429'd
 def delete_session(request: Request, session_id: str):
@@ -326,6 +364,7 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
                             "trust_metrics": result.get("trust_metrics"),
                             "recommended_cleaning": result.get("recommended_cleaning"),
                             "cleaning_rationale": result.get("cleaning_rationale"),
+                            "original_rows": len(df),
                         },
                         _mf,
                         cls=NumpyEncoder
@@ -448,7 +487,7 @@ async def upload_csv(
                 return JSONResponse(status_code=400, content={"error": f"JSON parse failed: {str(e)}"})
         else:
             try:
-                df = pl.read_csv(temp_file_path, infer_schema_length=1_000_000)
+                df = pl.read_csv(temp_file_path, infer_schema_length=30_000)
             except Exception:
                 try:
                     import pandas as pd
@@ -587,6 +626,7 @@ def get_data(
         return JSONResponse(status_code=404, content={"error": "Data not found"})
 
     df = pl.read_parquet(parquet_path)
+    df = df.with_row_index("original_index")
 
     total_anomalies = 0
     if "is_anomaly" in df.columns:
@@ -944,7 +984,7 @@ async def load_sample(request: Request, filename: str, background_tasks: Backgro
         return JSONResponse(status_code=404, content={"error": "Sample not found."})
 
     try:
-        df = pl.read_csv(file_path, infer_schema_length=1_000_000)
+        df = pl.read_csv(file_path, infer_schema_length=30_000)
         validation = SchemaEnforcer.validate(df, dataset_name=filename)
         if not validation["valid"]:
             return JSONResponse(

@@ -187,92 +187,6 @@ function LineageDriftCard({ topology }: { topology: LineageTopology }) {
     );
 }
 
-// NEW: Human Trust Score (HTS) Gauge
-function HumanTrustCard({ metrics }: { metrics: TrustMetrics }) {
-    if (!metrics) return null;
-
-    const { trust_score, components } = metrics;
-    const isHighTrust = trust_score >= 80;
-    const isMedTrust = trust_score >= 60 && trust_score < 80;
-    const color = isHighTrust ? "text-emerald-400" : isMedTrust ? "text-amber-400" : "text-rose-400";
-    const bgGlow = isHighTrust ? "bg-emerald-500" : isMedTrust ? "bg-amber-500" : "bg-rose-500";
-
-    // SVG Circle Math
-    const radius = 40;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - (trust_score / 100) * circumference;
-
-    return (
-        <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.6 }}
-            className="relative overflow-hidden bg-neutral-900/60 border border-white/5 rounded-2xl p-6 backdrop-blur-xl h-full"
-        >
-            <div className={`absolute -right-10 -top-10 h-32 w-32 rounded-full opacity-10 blur-3xl ${bgGlow}`} />
-
-            <SectionHeader
-                icon={<ShieldCheck className={`w-5 h-5 ${color}`} />}
-                title="System Trust Calibration"
-                subtitle="Calculated Operational Reliability"
-            />
-
-            <div className="flex flex-col lg:flex-row items-center gap-6 mt-4">
-                {/* Circular Gauge */}
-                <div className="relative flex items-center justify-center w-32 h-32 shrink-0">
-                    <svg className="absolute inset-0 w-full h-full transform -rotate-90">
-                        <circle cx="64" cy="64" r={radius} className="stroke-neutral-800" strokeWidth="8" fill="transparent" />
-                        <motion.circle
-                            cx="64" cy="64" r={radius}
-                            className={`stroke-current ${color}`}
-                            strokeWidth="8" fill="transparent"
-                            strokeDasharray={circumference}
-                            initial={{ strokeDashoffset: circumference }}
-                            animate={{ strokeDashoffset }}
-                            transition={{ duration: 1.5, ease: "easeOut" }}
-                            strokeLinecap="round"
-                        />
-                    </svg>
-                    <div className="text-center absolute inset-0 flex flex-col items-center justify-center">
-                        <span className={`text-3xl font-black ${color}`}>{trust_score}</span>
-                        <span className="text-[10px] text-neutral-500 block -mt-1 font-bold tracking-wider">HTS</span>
-                    </div>
-                </div>
-
-                {/* Sub-components Breakdown */}
-                <div className="flex-1 w-full space-y-3">
-                    <div>
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="text-neutral-400">Causal Faithfulness (β)</span>
-                            <span className="font-mono text-neutral-300">{components.causal_faithfulness}%</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.causal_faithfulness}%` }} transition={{ duration: 1, delay: 0.2 }} className="h-full bg-cyan-400 rounded-full" />
-                        </div>
-                    </div>
-                    <div>
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="text-neutral-400">RL Action Confidence (γ)</span>
-                            <span className="font-mono text-neutral-300">{components.rl_confidence}%</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.rl_confidence}%` }} transition={{ duration: 1, delay: 0.4 }} className="h-full bg-purple-400 rounded-full" />
-                        </div>
-                    </div>
-                    <div>
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="text-neutral-400">Historical Precision (α)</span>
-                            <span className="font-mono text-neutral-300">{components.fpr_penalty}%</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-                            <motion.div initial={{ width: 0 }} animate={{ width: `${components.fpr_penalty}%` }} transition={{ duration: 1, delay: 0.6 }} className="h-full bg-emerald-400 rounded-full" />
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </motion.div>
-    );
-}
 
 function SBVRRulesCard({ rules }: { rules: string[] }) {
     if (!rules || rules.length === 0) return null;
@@ -687,13 +601,8 @@ export default function Insights({ sessionId, cachedInsights, onInsightsLoaded }
             {/* WEEK 4 TOP DASHBOARD METRICS */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {lineage_topology && lineage_topology.status !== "skipped" && (
-                    <div className={trust_metrics ? "lg:col-span-2" : "lg:col-span-3"}>
+                    <div className="lg:col-span-3">
                         <LineageDriftCard topology={lineage_topology} />
-                    </div>
-                )}
-                {trust_metrics && (
-                    <div className={lineage_topology && lineage_topology.status !== "skipped" ? "lg:col-span-1" : "lg:col-span-3"}>
-                        <HumanTrustCard metrics={trust_metrics} />
                     </div>
                 )}
             </div>

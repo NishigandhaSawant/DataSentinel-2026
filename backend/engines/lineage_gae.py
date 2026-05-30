@@ -86,7 +86,7 @@ def build_empirical_adjacency(df: pd.DataFrame, threshold: float = 0.1) -> np.nd
     np.fill_diagonal(adj_matrix, 0.0)
     return adj_matrix
 
-def train_gae_and_score(adj_matrix: np.ndarray, feature_matrix: np.ndarray, epochs: int = 200) -> float:
+def train_gae_and_score(adj_matrix: np.ndarray, feature_matrix: np.ndarray, epochs: int = 50) -> float:
     """
     Trains the Graph Autoencoder to reconstruct the topology.
     Returns the final Reconstruction Error (Structural Drift Score).

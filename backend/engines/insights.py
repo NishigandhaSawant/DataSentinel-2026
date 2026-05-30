@@ -29,6 +29,12 @@ _INTERNAL_COLS = {
     "AI_Reason",
     "SHAP_Payload",
     "logic_violation",
+    "Consensus_Verdict",
+    "Counterfactual_Payload",
+    "Uncertainty_Score",
+    "lof_score",
+    "ecod_score",
+    "lstm_anomaly_score",
 }
 _ENGINEERED_SUFFIXES = (
     "_freq",
@@ -96,6 +102,16 @@ def generate_insights(session_id: str) -> dict:
 
     df = pl.read_parquet(raw_path)
     total_rows = len(df)
+    
+    det_meta_path = f"{session_dir}/detection_meta.json"
+    if os.path.exists(det_meta_path):
+        try:
+            with open(det_meta_path, "r") as dmf:
+                dm_data = json.load(dmf)
+                if "original_rows" in dm_data:
+                    total_rows = dm_data["original_rows"]
+        except Exception:
+            pass
 
     # ── Categorize columns ────────────────────────────────────────────────
     user_cols = [c for c in df.columns if _is_user_column(c)]

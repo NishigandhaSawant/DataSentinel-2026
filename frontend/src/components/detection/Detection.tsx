@@ -68,6 +68,7 @@ const INTERNAL_COLS = new Set([
   'lof_score',
   'lstm_anomaly_score',
   'ecod_score',
+  'original_index',
 ]);
 
 /* ─── Component ──────────────────────────────────────────────────────────────────────────── */
@@ -96,6 +97,8 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
 
   const [loadingFixes, setLoadingFixes] = useState<Record<number, boolean>>({});
   const [generatedFixes, setGeneratedFixes] = useState<Record<number, string>>({});
+  const [loadingCausal, setLoadingCausal] = useState<Record<number, boolean>>({});
+  const [causalReasons, setCausalReasons] = useState<Record<number, any>>({});
 
   const handleGenerateFix = async (originalIdx: number) => {
     setLoadingFixes(prev => ({ ...prev, [originalIdx]: true }));
@@ -111,6 +114,23 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
       alert(`Error generating fix: ${e}`);
     } finally {
       setLoadingFixes(prev => ({ ...prev, [originalIdx]: false }));
+    }
+  };
+
+  const handleRunCausalAnalysis = async (originalIdx: number) => {
+    setLoadingCausal(prev => ({ ...prev, [originalIdx]: true }));
+    try {
+      const res = await api.post(`/api/explain/${sessionId}`, { row_idx: originalIdx });
+      const json = res.data;
+      if (json.status === 'success' && json.causal_reasons) {
+        setCausalReasons(prev => ({ ...prev, [originalIdx]: json.causal_reasons }));
+      } else {
+        alert(`Failed to run causal analysis: ${json.error}`);
+      }
+    } catch (e) {
+      alert(`Error running causal analysis: ${e}`);
+    } finally {
+      setLoadingCausal(prev => ({ ...prev, [originalIdx]: false }));
     }
   };
 
@@ -267,7 +287,7 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
               </thead>
               <tbody className="divide-y divide-neutral-800">
                 {displayData.map((row, idx) => {
-                  const originalIdx = data.indexOf(row);
+                  const originalIdx = typeof row.original_index === 'number' ? row.original_index : data.indexOf(row);
 
                   const shapData = parseShapPayload(row.SHAP_Payload as string);
                   const rawCfData = generatedFixes[originalIdx] || row.Counterfactual_Payload;
@@ -295,6 +315,21 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                     }
                   }
 
+                  const rankedShap = shapData ? [...shapData].sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact)) : [];
+                  const anomalousFeatures = new Set(rankedShap.map(s => s.feature));
+
+                  let referenceCol: string | null = null;
+                  const possibleRefs = ['time', 'id', 'index', 'date'];
+                  for (const [key] of Object.entries(rowData)) {
+                    if (!anomalousFeatures.has(key)) {
+                      if (!referenceCol) referenceCol = key; // fallback to first available
+                      if (possibleRefs.some(ref => key.toLowerCase().includes(ref))) {
+                        referenceCol = key; // prefer 'time', 'id', etc.
+                        break;
+                      }
+                    }
+                  }
+
                   // LOF score — only show if meaningfully elevated (> 1.0 after inversion)
                   const lofScore =
                     typeof row.lof_score === 'number' && row.lof_score > 1.0
@@ -311,29 +346,73 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                     >
                       {/* ── Left: Raw data grid ─────────────────────────────── */}
                       <td className="px-6 py-5 w-[45%] align-top border-r border-neutral-800/50">
-                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 pr-2">
-                          {Object.entries(rowData).map(([key, val]) => (
-                            <div
-                              key={key}
-                              className="flex flex-col bg-black/40 p-2.5 rounded-lg border border-neutral-800/60 min-w-0"
-                            >
-                              <span
-                                className="text-[9px] text-neutral-500 uppercase font-bold tracking-wider mb-1 truncate"
-                                title={key}
+                        {rankedShap.length > 0 ? (
+                          <div className="flex flex-col space-y-3 pr-2">
+                            {rankedShap.map((shap, rank) => {
+                              const val = rowData[shap.feature];
+                              if (val === undefined) return null;
+                              return (
+                                <div key={shap.feature} className="flex flex-col bg-red-500/5 p-3 rounded-xl border border-red-900/40 relative overflow-hidden shadow-inner">
+                                  <div className="absolute top-0 left-0 w-1 h-full bg-red-500/80" />
+                                  <div className="flex justify-between items-center mb-1 pl-2">
+                                    <span className="text-[10px] text-red-400 uppercase font-black tracking-widest flex items-center">
+                                      <AlertTriangle className="w-3 h-3 mr-1" /> Rank {rank + 1} Anomaly
+                                    </span>
+                                    <span className="text-[10px] text-red-500/70 font-mono">
+                                      SHAP Impact: {shap.impact > 0 ? '+' : ''}{shap.impact.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-col pl-2 mt-1">
+                                    <span className="text-xs text-neutral-400 font-bold mb-0.5 truncate">{shap.feature}</span>
+                                    <span className="text-lg font-mono text-white truncate">
+                                      {typeof val === 'number' && !Number.isInteger(val) ? val.toFixed(4) : String(val ?? '—')}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            
+                            {referenceCol && (
+                              <div className="flex flex-col bg-black/40 p-3 rounded-xl border border-neutral-800/60 mt-4 opacity-70 hover:opacity-100 transition-opacity">
+                                <div className="flex items-center mb-1">
+                                  <span className="text-[9px] text-neutral-500 uppercase font-bold tracking-wider">Reference Data</span>
+                                </div>
+                                <div className="flex flex-col mt-1">
+                                  <span className="text-xs text-neutral-500 font-bold mb-0.5 truncate">{referenceCol}</span>
+                                  <span className="text-sm font-mono text-neutral-400 truncate">
+                                    {typeof rowData[referenceCol] === 'number' && !Number.isInteger(rowData[referenceCol]) 
+                                      ? (rowData[referenceCol] as number).toFixed(4) 
+                                      : String(rowData[referenceCol] ?? '—')}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 pr-2">
+                            {Object.entries(rowData).map(([key, val]) => (
+                              <div
+                                key={key}
+                                className="flex flex-col bg-black/40 p-2.5 rounded-lg border border-neutral-800/60 min-w-0"
                               >
-                                {key}
-                              </span>
-                              <span
-                                className="text-xs font-mono text-neutral-200 truncate"
-                                title={String(val)}
-                              >
-                                {typeof val === 'number' && !Number.isInteger(val)
-                                  ? val.toFixed(4)
-                                  : String(val ?? '—')}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
+                                <span
+                                  className="text-[9px] text-neutral-500 uppercase font-bold tracking-wider mb-1 truncate"
+                                  title={key}
+                                >
+                                  {key}
+                                </span>
+                                <span
+                                  className="text-xs font-mono text-neutral-200 truncate"
+                                  title={String(val)}
+                                >
+                                  {typeof val === 'number' && !Number.isInteger(val)
+                                    ? val.toFixed(4)
+                                    : String(val ?? '—')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </td>
 
                       {/* ── Right: Explanations ─────────────────────────────── */}
@@ -422,32 +501,67 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                                 <Wand2 className="w-3.5 h-3.5 mr-1.5" /> How to Fix This (Counterfactual AI)
                               </h5>
                               <div className="space-y-2">
-                                {Object.entries(cfData).map(([feat, changes]) => (
-                                  <div key={feat} className="flex items-center justify-between text-xs">
-                                    <span
-                                      className="text-neutral-400 font-mono truncate w-1/3 pr-2"
-                                      title={feat}
-                                    >
-                                      {feat}
-                                    </span>
-                                    <div className="flex items-center space-x-3 w-2/3 justify-end font-mono">
-                                      <span className="text-red-400 bg-red-500/10 px-2 py-0.5 rounded line-through decoration-red-500/50">
-                                        {changes.from}
-                                      </span>
-                                      <ArrowRight className="w-3 h-3 text-neutral-600 shrink-0" />
-                                      <span className="text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded font-bold">
-                                        {changes.to}
-                                      </span>
+                                {Object.entries(cfData).map(([feat, changes]) => {
+                                  const shapRank = rankedShap.findIndex(s => s.feature === feat) + 1;
+                                  return (
+                                    <div key={feat} className="flex items-center justify-between text-xs">
+                                      <div className="flex items-center w-1/3 pr-2 overflow-hidden">
+                                        {shapRank > 0 && (
+                                          <span className="text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded font-black mr-2 shrink-0">
+                                            RANK {shapRank}
+                                          </span>
+                                        )}
+                                        <span
+                                          className="text-neutral-400 font-mono truncate"
+                                          title={feat}
+                                        >
+                                          {feat}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center space-x-3 w-2/3 justify-end font-mono">
+                                        <span className="text-red-400 bg-red-500/10 px-2 py-0.5 rounded line-through decoration-red-500/50">
+                                          {changes.from}
+                                        </span>
+                                        <ArrowRight className="w-3 h-3 text-neutral-600 shrink-0" />
+                                        <span className="text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded font-bold">
+                                          {changes.to}
+                                        </span>
+                                      </div>
                                     </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                               <p className="text-[10px] text-neutral-600 mt-3 italic">
                                 If these values were different, this row would not have been flagged.
                               </p>
                             </div>
-                          ) : (
-                            <div className="mt-3">
+                          ) : null}
+
+                          {/* ── NOTEARS Causal Explanations UI ── */}
+                          {causalReasons[originalIdx] && causalReasons[originalIdx].length > 0 && (
+                            <div className="bg-[#050505] border border-purple-900/40 rounded-xl p-4 mt-3 relative overflow-hidden">
+                              <div className="absolute left-0 top-0 w-1 h-full bg-purple-500/50 rounded-l-xl" />
+                              <h5 className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-3 flex items-center">
+                                <Activity className="w-3.5 h-3.5 mr-1.5" /> Root Cause Analysis (NOTEARS)
+                              </h5>
+                              <div className="space-y-2">
+                                {causalReasons[originalIdx].map((path: any, pIdx: number) => (
+                                  <div key={pIdx} className="flex items-center justify-between text-xs font-mono">
+                                    <div className="flex items-center space-x-2 w-2/3">
+                                      <span className="text-neutral-400 truncate" title={path.feature}>{path.feature}</span>
+                                    </div>
+                                    <span className="text-[10px] text-neutral-500">
+                                      impact: {typeof path.impact === 'number' ? path.impact.toFixed(2) : 'N/A'}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* ── Action Buttons ── */}
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {(!cfData || Object.keys(cfData).length === 0) && (
                               <button
                                 onClick={() => handleGenerateFix(originalIdx)}
                                 disabled={loadingFixes[originalIdx]}
@@ -460,8 +574,23 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
                                 )}
                                 <span>{loadingFixes[originalIdx] ? "Generating Fix..." : "Generate Fix"}</span>
                               </button>
-                            </div>
-                          )}
+                            )}
+
+                            {(!causalReasons[originalIdx] || causalReasons[originalIdx].length === 0) && (
+                              <button
+                                onClick={() => handleRunCausalAnalysis(originalIdx)}
+                                disabled={loadingCausal[originalIdx]}
+                                className="flex items-center space-x-2 text-xs font-bold text-purple-400 bg-purple-500/10 border border-purple-900/50 px-4 py-2 rounded-lg hover:bg-purple-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {loadingCausal[originalIdx] ? (
+                                  <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin mr-1" />
+                                ) : (
+                                  <Activity className="w-4 h-4" />
+                                )}
+                                <span>{loadingCausal[originalIdx] ? "Analyzing..." : "Explain with NOTEARS"}</span>
+                              </button>
+                            )}
+                          </div>
 
                           {/* Analyst Feedback */}
                           <div className="flex items-center space-x-2 pt-1 border-t border-neutral-800/50 mt-4">

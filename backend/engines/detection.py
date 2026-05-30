@@ -143,7 +143,7 @@ class AnomalyDetectionConfig:
 
     lstm_seq_len: int = 10
     lstm_min_sequences: int = 20
-    lstm_epochs: int = 5
+    lstm_epochs: int = 2
     lstm_batch_size: int = 64
     lstm_units: int = 32
 
@@ -367,6 +367,7 @@ _DOMAIN_CLEANING: dict[str, tuple[str, str]] = {
 _ENTITY_KEYWORDS: tuple[str, ...] = (
     "user", "account", "customer", "merchant",
     "employee", "sender", "client", "patient",
+    "passenger", "transaction", "session", "device", "order",
 )
 
 
@@ -767,6 +768,11 @@ def _build_narratives(
                         sec_z, sec_col = z, col
 
             if max_col and max_z > 2.0:
+                pseudo_shap = [{"feature": max_col, "impact": max_z}]
+                if sec_col and sec_z > 1.5:
+                    pseudo_shap.append({"feature": sec_col, "impact": sec_z})
+                causal_payloads[idx] = json.dumps(pseudo_shap)
+                
                 readable_max  = _humanize_feature_name(max_col)
                 formatted_max = _format_value(row[max_col], max_col)
                 try:
@@ -799,6 +805,12 @@ def _build_narratives(
                     )
                 reasons_list[idx] = reason
             else:
+                if max_col:
+                    pseudo_shap = [{"feature": max_col, "impact": max_z}]
+                    if sec_col:
+                        pseudo_shap.append({"feature": sec_col, "impact": sec_z})
+                    causal_payloads[idx] = json.dumps(pseudo_shap)
+                    
                 multi_opts = [
                     f"{subject} doesn't have one obvious red flag, but the combination of several values together created a pattern the model hasn't seen before.",
                     f"No single value here is dramatically out of range, but the overall profile of this record is unlike the rest of the dataset.",
@@ -844,6 +856,19 @@ def _recommend_cleaning(
 
 
 # ---------------------------------------------------------------------------
+# SAMPLING HELPER
+# ---------------------------------------------------------------------------
+
+def _calculate_dynamic_sample_size(num_rows: int, num_cols: int, max_cfg_samples: int) -> int:
+    """Dynamically calculates the optimal sample size based on dataset dimensions."""
+    target_elements = 1_500_000
+    computed_sample = target_elements // max(1, num_cols)
+    
+    # Clamp between 10k and 40k, but don't exceed the config's max_samples
+    dynamic_max_samples = max(10_000, min(40_000, computed_sample))
+    return min(dynamic_max_samples, max_cfg_samples)
+
+# ---------------------------------------------------------------------------
 # LOAD HELPER  (Doc-2: standalone pure function, independently testable)
 # ---------------------------------------------------------------------------
 
@@ -859,7 +884,7 @@ def _load_dataframe(
     if df is not None:
         return df
     try:
-        return pl.read_csv(file_path, infer_schema_length=1_000_000)
+        return pl.read_csv(file_path, infer_schema_length=30_000)
     except Exception as primary_err:
         logger.warning("Polars CSV read failed (%s), trying pandas...", primary_err)
         try:
@@ -922,7 +947,9 @@ def _stage_engineer(ctx: PipelineContext) -> PipelineContext:
     ]
     ctx.id_cols = [
         c for c in ctx.df.columns
-        if "id" in c.lower() and any(kw in c.lower() for kw in _ENTITY_KEYWORDS)
+        if c.lower() in ("id", "index", "uuid", "guid") or
+           (c.lower().endswith("id") and len(c) > 2) or
+           ("id" in c.lower() and any(kw in c.lower() for kw in _ENTITY_KEYWORDS))
     ]
 
     # --- NLP Bridge ---
@@ -935,11 +962,11 @@ def _stage_engineer(ctx: PipelineContext) -> PipelineContext:
     # --- Column classification ---
     ctx.numeric_cols = [
         c for c in ctx.pandas_df.select_dtypes(include=[np.number]).columns.tolist()
-        if c not in ctx.time_cols and c != "_orig_idx"
+        if c not in ctx.time_cols and c not in ctx.id_cols and c != "_orig_idx"
     ]
     ctx.cat_cols = [
         c for c in ctx.pandas_df.select_dtypes(include=["object", "string"]).columns.tolist()
-        if c != "logic_violation"
+        if c not in ctx.id_cols and c != "logic_violation"
     ]
 
     # --- Logic Gate state (derived from gate applied in _stage_load) ---
@@ -1126,11 +1153,19 @@ def _stage_engineer(ctx: PipelineContext) -> PipelineContext:
 
     # --- Clean training subset ---
     clean_encoded = ctx.encoded_df[clean_mask]
-    if len(clean_encoded) > ctx.cfg.if_max_samples:
-        ctx.train_df = clean_encoded.sample(n=ctx.cfg.if_max_samples, random_state=42)
+    dynamic_max_samples = _calculate_dynamic_sample_size(len(clean_encoded), len(clean_encoded.columns), ctx.cfg.if_max_samples)
+    
+    if len(clean_encoded) > dynamic_max_samples:
+        ctx.train_df = clean_encoded.sample(n=dynamic_max_samples, random_state=42)
     elif len(clean_encoded) == 0:
         logger.warning("No clean training data — falling back to full dataset.")
-        ctx.train_df = ctx.encoded_df
+        
+        # Still apply dynamic sampling to the full dataset if it's very large
+        dynamic_max_samples_full = _calculate_dynamic_sample_size(len(ctx.encoded_df), len(ctx.encoded_df.columns), ctx.cfg.if_max_samples)
+        if len(ctx.encoded_df) > dynamic_max_samples_full:
+            ctx.train_df = ctx.encoded_df.sample(n=dynamic_max_samples_full, random_state=42)
+        else:
+            ctx.train_df = ctx.encoded_df
     else:
         ctx.train_df = clean_encoded
 
@@ -1187,7 +1222,7 @@ def _stage_score(ctx: PipelineContext) -> PipelineContext:
                 logger.info("Ensemble: Fitting Isolation Forest...")
                 # Reduce n_jobs to avoid thread thrashing since we are running concurrently
                 ctx.model = IsolationForest(
-                    n_estimators=ctx.cfg.if_n_estimators, n_jobs=2, random_state=42
+                    n_estimators=ctx.cfg.if_n_estimators, n_jobs=-1, random_state=42
                 )
                 ctx.model.fit(ctx.train_df.values)
                 if JOBLIB_AVAILABLE:
@@ -1210,12 +1245,22 @@ def _stage_score(ctx: PipelineContext) -> PipelineContext:
                     logger.info("Ensemble: Fitting LOF...")
                     scaler       = RobustScaler()
                     train_scaled = scaler.fit_transform(ctx.train_df.values)
+                    
+                    # SUBSAMPLE for LOF training to speed up score_samples on large datasets
+                    max_lof_train = 5000
+                    if len(train_scaled) > max_lof_train:
+                        np.random.seed(42)
+                        idx = np.random.choice(len(train_scaled), max_lof_train, replace=False)
+                        train_scaled_lof = train_scaled[idx]
+                    else:
+                        train_scaled_lof = train_scaled
+
                     full_scaled  = scaler.transform(ctx.encoded_df.values)
                     clf_lof = LocalOutlierFactor(
-                        n_neighbors=max(1, min(ctx.cfg.lof_n_neighbors, len(ctx.train_df) - 1)),
-                        novelty=True, n_jobs=2,
+                        n_neighbors=max(1, min(ctx.cfg.lof_n_neighbors, len(train_scaled_lof) - 1)),
+                        novelty=True, n_jobs=-1,
                     )
-                    clf_lof.fit(train_scaled)
+                    clf_lof.fit(train_scaled_lof)
                     if JOBLIB_AVAILABLE:
                         joblib.dump(scaler,  scaler_path)
                         joblib.dump(clf_lof, lof_path)
@@ -1230,7 +1275,7 @@ def _stage_score(ctx: PipelineContext) -> PipelineContext:
                 ecod_safe = ctx.encoded_df.loc[:, ctx.encoded_df.nunique() > 1]
                 if not ecod_safe.empty:
                     # ECOD uses n_jobs internally if available, we limit to avoid thrashing
-                    clf_ecod = ECOD(n_jobs=2)
+                    clf_ecod = ECOD(n_jobs=-1)
                     clf_ecod.fit(ecod_safe.values)
                     ctx.scores_raw["ecod"] = clf_ecod.decision_scores_
             except (ValueError, RuntimeError) as e:
@@ -1245,23 +1290,25 @@ def _stage_score(ctx: PipelineContext) -> PipelineContext:
             if valid_cols:
                 try:
                     logger.info("Ensemble: Fitting LNN Autoencoder...")
+                    # Train on train_df, but we still need to score on encoded_df
+                    # detect_anomalies_lnn expects a df and returns scores for it.
+                    # We will update detect_anomalies_lnn to train on train_df and score on encoded_df
+                    # For now, pass train_df and encoded_df
                     lnn_results = detect_anomalies_lnn(
-                        df=pl.from_pandas(ctx.encoded_df), numeric_cols=valid_cols, epochs=30
+                        train_df=pl.from_pandas(ctx.train_df), 
+                        score_df=pl.from_pandas(ctx.encoded_df), 
+                        numeric_cols=valid_cols, epochs=20
                     )
                     ctx.scores_raw["lnn"] = np.array(lnn_results["threat_scores"])
                 except (ValueError, RuntimeError) as e:
                     logger.warning("Ensemble LNN failed: %s", e)
 
-    # Run ensemble models in parallel to massively speed up processing on CPUs
-    logger.info("Ensemble: Launching parallel detectors...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [
-            executor.submit(_fit_if),
-            executor.submit(_fit_lof),
-            executor.submit(_fit_ecod),
-            executor.submit(_fit_lnn)
-        ]
-        concurrent.futures.wait(futures)
+    # Run ensemble models sequentially to avoid Python GIL thread thrashing
+    logger.info("Ensemble: Running detectors sequentially...")
+    _fit_if()
+    _fit_lof()
+    _fit_ecod()
+    _fit_lnn()
 
     # 5. LSTM  (pre-computed in _stage_engineer)
     if ctx.lstm_available and ctx.lstm_scores is not None:
@@ -1371,40 +1418,8 @@ def _stage_explain(ctx: PipelineContext) -> PipelineContext:
 
     # --- Causal RCA ---
     ctx.causal_payloads = ["[]"] * n
-    if ctx.model_fitted and ctx.is_anomaly.any():
-        try:
-            stat_idxs = [
-                int(i) for i in np.where(ctx.is_anomaly)[0]
-                if i not in ctx.logic_flag_set
-            ][:ctx.cfg.shap_max_rows]
-
-            if stat_idxs:
-                global_stats = {
-                    col: {"mean": ctx.encoded_df[col].mean(), "std": ctx.encoded_df[col].std()}
-                    for col in ctx.encoded_df.columns
-                }
-                causal_results = generate_causal_payloads(
-                    encoded_df=ctx.encoded_df,
-                    anomaly_indices=stat_idxs,
-                    stats=global_stats,
-                )
-                # -------------------------------------------------------------------
-                # Doc-1 FIX: generate_causal_payloads returns a LIST positionally
-                # aligned to stat_idxs, NOT a dict keyed by DataFrame index.
-                # Doc-2 used .get(idx, "[]") which raises AttributeError on a list.
-                # Use zip for the list case; defensive isinstance branch handles
-                # any future version that returns a dict.
-                # -------------------------------------------------------------------
-                if isinstance(causal_results, dict):
-                    for idx in stat_idxs:
-                        ctx.causal_payloads[idx] = causal_results.get(idx, "[]")
-                else:
-                    for idx in stat_idxs:
-                        if causal_results[idx]:
-                            ctx.causal_payloads[idx] = causal_results[idx]
-
-        except (ValueError, RuntimeError) as e:
-            logger.warning("Causal RCA failed: %s", e)
+    # NOTEARS Causal RCA has been moved to fully on-demand execution.
+    # It is skipped here to speed up the main detection pipeline.
 
     # --- DiCE Counterfactuals  (restored from v4.1) ---
     ctx.cf_payloads = ["{}"] * n
@@ -1547,8 +1562,23 @@ def _stage_persist(ctx: PipelineContext) -> PipelineContext:
     ctx.raw_parquet_path = f"{ctx.session_dir}/raw_data.parquet"
     ctx.df.write_parquet(ctx.raw_parquet_path)
     
+    # Save encoded parquet: synchronously if small, background thread if large
     if ctx.encoded_df is not None:
-        ctx.encoded_df.to_parquet(f"{ctx.session_dir}/encoded_data.parquet")
+        encoded_path = f"{ctx.session_dir}/encoded_data.parquet"
+        if len(ctx.encoded_df) <= 50000:
+            ctx.encoded_df.to_parquet(encoded_path)
+        else:
+            import threading
+            def _bg_write(df_to_write, path):
+                try:
+                    df_to_write.to_parquet(path)
+                    logger.info("Background write of encoded_data.parquet completed.")
+                except Exception as e:
+                    logger.error("Failed background parquet write: %s", e)
+            
+            # Use copy() to prevent issues if the main thread mutates it (though it shouldn't)
+            t = threading.Thread(target=_bg_write, args=(ctx.encoded_df.copy(), encoded_path))
+            t.start()
         
     if ctx.model is not None and JOBLIB_AVAILABLE:
         joblib.dump(ctx.model, f"{ctx.models_dir}/iforest.joblib")
@@ -1909,20 +1939,32 @@ def generate_counterfactual_for_row(session_id: str, row_idx: int) -> dict:
     import warnings
     from pandas.errors import PerformanceWarning
     
-    with warnings.catch_warnings():
-        warnings.simplefilter(action='ignore', category=PerformanceWarning)
-        cf_result = exp.generate_counterfactuals(
-            query_subset, 
-            total_CFs=1, 
-            desired_class="opposite", 
-            features_to_vary="all" if features_to_vary == "all" else features_to_vary,
-            verbose=False
-        )
-    
-    if not cf_result.cf_examples_list or cf_result.cf_examples_list[0].final_cfs_df is None:
-        return {"error": "Could not generate counterfactual."}
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=PerformanceWarning)
+            cf_result = exp.generate_counterfactuals(
+                query_subset, 
+                total_CFs=1, 
+                desired_class="opposite", 
+                features_to_vary="all" if features_to_vary == "all" else features_to_vary,
+                verbose=False
+            )
         
-    cf_dict = cf_result.cf_examples_list[0].final_cfs_df.iloc[0].to_dict()
+        if not cf_result.cf_examples_list or cf_result.cf_examples_list[0].final_cfs_df is None:
+            raise ValueError("Could not generate counterfactual.")
+            
+        cf_dict = cf_result.cf_examples_list[0].final_cfs_df.iloc[0].to_dict()
+    except Exception as e:
+        if features_to_vary != "all":
+            # Deterministic fallback: replace anomalous features with their normal baseline mean
+            cf_dict = query_subset.iloc[0].to_dict()
+            for f in features_to_vary:
+                normal_mean = cf_df[cf_df["_target"] == 0][f].mean()
+                if pd.isna(normal_mean):
+                    normal_mean = cf_df[f].mean()
+                cf_dict[f] = normal_mean
+        else:
+            return {"error": "Could not generate counterfactual: " + str(e)}
     original_row = encoded_df.iloc[row_idx].to_dict()
     changes = {
         k: {"from": round(float(original_row[k]), 4), "to": round(float(v), 4)}

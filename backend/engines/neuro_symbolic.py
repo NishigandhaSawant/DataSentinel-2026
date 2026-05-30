@@ -60,25 +60,30 @@ def compute_neuro_symbolic_loss(x: torch.Tensor, x_hat: torch.Tensor, lambda_log
     total_loss = mse_loss + (lambda_logic * logic_loss)
     return total_loss, mse_loss
 
-def detect_anomalies_lnn(df: pl.DataFrame, numeric_cols: list[str], epochs: int = 50) -> dict:
+def detect_anomalies_lnn(train_df: pl.DataFrame, score_df: pl.DataFrame, numeric_cols: list[str], epochs: int = 50) -> dict:
     """
     Orchestrates the Neuro-Symbolic anomaly detection pipeline.
     """
     logger.info("Initializing Neuro-Symbolic Autoencoder...")
     
     # 1. Preprocessing
-    pandas_df = df.select(numeric_cols).to_pandas()
+    pandas_train_df = train_df.select(numeric_cols).to_pandas()
+    pandas_score_df = score_df.select(numeric_cols).to_pandas()
+    
     # Fill nulls temporarily with median so PyTorch doesn't crash (RL Imputer handles this later)
-    pandas_df = pandas_df.fillna(pandas_df.median()) 
+    pandas_train_df = pandas_train_df.fillna(pandas_train_df.median())
+    pandas_score_df = pandas_score_df.fillna(pandas_train_df.median()) 
     
     scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(pandas_df)
+    scaled_train_data = scaler.fit_transform(pandas_train_df)
+    scaled_score_data = scaler.transform(pandas_score_df)
     
     # Convert to PyTorch Tensors
-    tensor_data = torch.FloatTensor(scaled_data)
+    tensor_train_data = torch.FloatTensor(scaled_train_data)
+    tensor_score_data = torch.FloatTensor(scaled_score_data)
     
     # 2. Initialize Model
-    input_dim = tensor_data.shape[1]
+    input_dim = tensor_train_data.shape[1]
     model = LNNAutoencoder(input_dim=input_dim)
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     
@@ -86,10 +91,10 @@ def detect_anomalies_lnn(df: pl.DataFrame, numeric_cols: list[str], epochs: int 
     model.train()
     for epoch in range(epochs):
         optimizer.zero_grad()
-        reconstructed = model(tensor_data)
+        reconstructed = model(tensor_train_data)
         
         # Calculate Neuro-Symbolic Loss
-        loss, _ = compute_neuro_symbolic_loss(tensor_data, reconstructed)
+        loss, _ = compute_neuro_symbolic_loss(tensor_train_data, reconstructed)
         
         loss.backward()
         optimizer.step()
@@ -97,9 +102,9 @@ def detect_anomalies_lnn(df: pl.DataFrame, numeric_cols: list[str], epochs: int 
     # 4. Inference & Anomaly Scoring
     model.eval()
     with torch.no_grad():
-        final_reconstruction = model(tensor_data)
+        final_reconstruction = model(tensor_score_data)
         # Compute row-wise Mean Squared Error
-        row_mse = torch.mean((tensor_data - final_reconstruction) ** 2, dim=1).numpy()
+        row_mse = torch.mean((tensor_score_data - final_reconstruction) ** 2, dim=1).numpy()
     
     # Convert unbounded MSE to a bounded 0-100 Threat Score
     # We use a non-linear scaling to push extreme errors closer to 100
