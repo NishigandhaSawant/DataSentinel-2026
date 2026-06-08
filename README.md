@@ -386,6 +386,8 @@ DataSentinel/
 │   ├── schema.py                # Data contract validation (SchemaEnforcer)
 │   ├── utils.py                 # Session management, logging, audit trail utilities
 │   ├── groq_client.py           # Centralized Groq LLM client with retry logic
+│   ├── Dockerfile               # Container image definition for the backend service
+│   ├── test_upload.py           # Quick upload smoke test (standalone script)
 │   ├── engines/
 │   │   ├── __init__.py          # Re-exports all engine functions
 │   │   ├── active_learning.py   # Active Learning & Uncertainty Sampling
@@ -401,13 +403,23 @@ DataSentinel/
 │   │   ├── quality.py           # Data quality report & health score generation
 │   │   ├── query.py             # Natural language → SQL via Groq + DuckDB execution
 │   │   ├── rl_cleaner.py        # Reinforcement Learning agent for data imputation
+│   │   ├── vector_rag.py        # TF-IDF + SVD vector store for RAG business dictionary
 │   │   └── visualization.py     # Chart data aggregation (histograms, correlations)
 │   ├── data/
-│   │   ├── fraud_transactions.csv    # Sample: Financial fraud dataset
-│   │   ├── patient_vitals.csv        # Sample: Healthcare vitals dataset
-│   │   ├── ecommerce_reviews.csv     # Sample: E-commerce reviews dataset
-│   │   ├── business_dictionary.json  # Persistent RAG knowledge base
-│   │   └── schemas/                  # Data contract schema definitions
+│   │   ├── fraud_transactions.csv         # Sample: Financial fraud dataset
+│   │   ├── patient_vitals.csv             # Sample: Healthcare vitals dataset
+│   │   ├── ecommerce_reviews.csv          # Sample: E-commerce product reviews
+│   │   ├── Titanic-Dataset.csv            # Sample: Titanic passenger data
+│   │   ├── hospital_readmission_dataset.csv # Sample: Hospital readmission records
+│   │   ├── gdpr_stress_test.csv           # Sample: GDPR PII stress-test dataset
+│   │   ├── fifa21_raw_data.csv            # Sample: FIFA 21 player statistics
+│   │   ├── amazon.csv                     # Sample: Amazon product listings
+│   │   ├── HRCEMAIL_names.csv             # Sample: HR/email PII detection dataset
+│   │   ├── velocity_engine.csv            # Sample: Streaming velocity anomaly dataset
+│   │   ├── business_dictionary.json       # Persistent RAG knowledge base (user-taught terms)
+│   │   ├── feedback.jsonl                 # Active learning feedback log
+│   │   ├── schemas/                       # Data contract schema definitions
+│   │   └── vector_kb/                     # Persisted TF-IDF vector index for RAG
 │   ├── tests/
 │   │   ├── conftest.py          # Pytest fixtures & shared test setup
 │   │   ├── test_api.py          # API endpoint integration tests
@@ -440,6 +452,8 @@ DataSentinel/
 │   │   │       ├── query/page.tsx      # Natural language chat (SSE)
 │   │   │       └── report/page.tsx     # Health scorecard & export
 │   │   ├── components/
+│   │   │   ├── ResetConfirmModal.tsx   # Session reset confirmation dialog
+│   │   │   ├── SmoothScroller.tsx      # Lenis smooth scroll wrapper
 │   │   │   ├── landing/
 │   │   │   │   ├── HeroLanding.tsx        # GSAP scroll-driven cinematic intro
 │   │   │   │   ├── PurificationCore.tsx   # Three.js data purification particle animation
