@@ -10,6 +10,7 @@ from engines.insights import generate_insights
 from engines.query import execute_natural_query_stream, confirm_and_execute_edit
 from engines.quality import generate_quality_report
 from engines.pii_scanner import scan_for_pii, pseudonymise_columns
+from engines.vector_rag import upsert_approved_fix, get_rag_stats
 
 __all__ = [
     "process_and_detect",
@@ -22,4 +23,6 @@ __all__ = [
     "generate_quality_report",
     "scan_for_pii",
     "pseudonymise_columns",
+    "upsert_approved_fix",
+    "get_rag_stats",
 ]

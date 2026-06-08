@@ -4,7 +4,6 @@ Session management, structured logging, and path helpers.
 """
 
 import os
-import re
 import logging
 import time
 import shutil

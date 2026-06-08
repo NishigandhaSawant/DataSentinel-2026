@@ -30,6 +30,8 @@ export function useDetection(sessionId: string) {
   const [driftReport, setDriftReport] = useState<DriftReport | undefined>(undefined);
   const [recommendation, setRecommendation] = useState<string | undefined>(undefined);
 
+  const [refetchTrigger, setRefetchTrigger] = useState(0);
+
   useEffect(() => {
     if (!sessionId) {
       setErrorMsg('Critical Error: Session ID is missing. Please refresh and try uploading again.');
@@ -72,7 +74,8 @@ export function useDetection(sessionId: string) {
             const lowestScore = Math.floor(Math.min(...threatScores));
             const boundedMin = Math.max(0, Math.min(lowestScore, 99));
             setMinSliderBound(boundedMin);
-            setThreshold(boundedMin);
+            // Don't override user's threshold on refetch
+            setThreshold(prev => prev === 0 ? boundedMin : prev);
           }
         } else {
           throw new Error('Invalid data format received from the server.');
@@ -117,7 +120,7 @@ export function useDetection(sessionId: string) {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, refetchTrigger]);
 
   const submitFeedback = async (row: AnomalyRow, idx: number, isCorrect: boolean) => {
     try {
@@ -143,5 +146,6 @@ export function useDetection(sessionId: string) {
     submitFeedback,
     driftReport,
     recommendation,
+    refetch: () => setRefetchTrigger(prev => prev + 1),
   };
 }

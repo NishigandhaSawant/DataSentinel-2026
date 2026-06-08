@@ -6,12 +6,7 @@
 export interface UploadResponse {
   status: string;
   session_id: string;
-  total_rows: number;
-  anomaly_count: number;
-  recommendation: string;
-  recommended_cleaning: string;
-  cleaning_rationale: string;
-  parquet_path: string;
+  dataset_status?: string;
 }
 
 export interface AnomalyRow {
@@ -70,7 +65,7 @@ export interface InsightsSummary {
   date_columns: number;
   anomaly_count: number;
   anomaly_rate: number;
-  health_score: number;
+  health_score?: number;
 }
 
 export interface ColumnProfile {

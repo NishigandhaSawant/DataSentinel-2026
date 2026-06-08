@@ -60,7 +60,7 @@ def compute_human_trust_score(session_id: str, causal_payloads: list) -> dict:
             if total_reviews > 0:
                 fpr = fp_count / total_reviews
         except Exception as e:
-            logger.warning(f"Failed to read feedback log for HTS: {e}")
+            logger.warning("Failed to read feedback log for HTS: %s", e)
 
     # 2. Causal Faithfulness
     # Faithfulness measures if the top causal features actually have high impact scores.

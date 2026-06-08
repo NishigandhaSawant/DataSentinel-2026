@@ -1,6 +1,6 @@
 /* ─── Imports ────────────────────────────────────────────────────────────────────────────── */
 
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldAlert,
   CheckCircle,
@@ -14,6 +14,7 @@ import {
   Radar,
   GitBranch,
   Wand2,
+  BotMessageSquare,
 } from 'lucide-react';
 import { useState } from 'react';
 import api from '@/services/api.service';
@@ -93,6 +94,7 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
     submitFeedback,
     driftReport,
     recommendation,
+    refetch,
   } = useDetection(sessionId);
 
   const [loadingFixes, setLoadingFixes] = useState<Record<number, boolean>>({});
@@ -134,7 +136,7 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
     }
   };
 
-  if (isLoading) {
+  if (isLoading && data.length === 0) {
     return (
       <div className="w-full mt-6 flex flex-col items-center justify-center h-64 border border-neutral-800 rounded-2xl bg-[#0A0A0A]">
         <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4" />
@@ -275,7 +277,13 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
       )}
 
       {/* ── Anomaly Table ─────────────────────────────────────────────────────── */}
-      <div className="bg-[#0A0A0A] border border-neutral-800 rounded-2xl overflow-hidden">
+      <div className="bg-[#0A0A0A] border border-neutral-800 rounded-2xl overflow-hidden relative min-h-[200px]">
+        {/* Loading overlay during refetch */}
+        {isLoading && data.length > 0 && (
+          <div className="absolute inset-0 z-50 bg-[#0A0A0A]/50 backdrop-blur-sm flex items-center justify-center">
+            <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          </div>
+        )}
         {displayData.length > 0 ? (
           <div className="overflow-x-auto max-h-[600px] custom-scrollbar" data-lenis-prevent>
             <table className="w-full text-sm text-left table-fixed">
@@ -647,4 +655,4 @@ export default function Detection({ sessionId }: DetectionProps): React.JSX.Elem
   );
 }
 
-/* ─── Exports ────────────────────────────────────────────────────────────────────────────── */
+/* ─── Exports ────────────────────────────────────────────────────────────────────────── */

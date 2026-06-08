@@ -11,6 +11,7 @@ import re
 import json
 import uuid
 import shutil
+import threading
 from datetime import datetime, timezone
 import io
 
@@ -67,6 +68,8 @@ from engines import (
     generate_quality_report,
     scan_for_pii,
     pseudonymise_columns,
+    upsert_approved_fix,
+    get_rag_stats,
 )
 
 # --- RATE LIMITER (in-memory, per-IP) ----------------------------------------
@@ -91,7 +94,7 @@ class FeedbackRequest(BaseModel):
 def submit_active_learning_feedback(request: Request, session_id: str, payload: FeedbackRequest):
     try:
         session_dir = _session_dir(session_id)
-        feedback_path = os.path.join(session_dir, "feedback_log.jsonl")
+        feedback_path = os.path.join(_BACKEND_DIR, "data", "feedback_log.jsonl")
         os.makedirs(os.path.dirname(feedback_path), exist_ok=True)
         
         feedback_entry = {
@@ -168,6 +171,7 @@ def explain_row(request: Request, session_id: str, payload: GenerateFixRequest):
         logger.error("Error generating explanation for %s: %s", session_id, e)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
 @app.post("/api/session/{session_id}/delete")
 @limiter.limit("60/minute")  # raised: rapid beacon retries must not be 429'd
 def delete_session(request: Request, session_id: str):
@@ -195,9 +199,10 @@ def delete_session(request: Request, session_id: str):
         # Also evict the in-memory job status so stale progress data can't
         # bleed into a future session with the same ID (extremely unlikely but
         # correct to clean up).
-        if session_id in job_status:
-            del job_status[session_id]
-            logger.info("Session %s: in-memory job_status evicted.", session_id)
+        with job_status_lock:
+            if session_id in job_status:
+                del job_status[session_id]
+                logger.info("Session %s: in-memory job_status evicted.", session_id)
 
         if deleted_files:
             return {"status": "success", "message": "Session fully purged"}
@@ -322,10 +327,11 @@ def reset_session(request: Request, session_id: str):
         session_dir = _session_dir(session_id)
         if os.path.exists(session_dir):
             shutil.rmtree(session_dir, ignore_errors=True)
-            logger.info(f"Session {session_id} successfully purged due to user refresh.")
+            logger.info("Session %s successfully purged due to user refresh.", session_id)
             
-        if session_id in job_status:
-            del job_status[session_id]
+        with job_status_lock:
+            if session_id in job_status:
+                del job_status[session_id]
             
         return {"status": "success", "message": "Session environment dumped and sterilized."}
     except ValueError:
@@ -334,10 +340,12 @@ def reset_session(request: Request, session_id: str):
 
 # ── BACKGROUND JOB PROCESSOR ─────────────────────────────────────────────────
 job_status = {}
+job_status_lock = threading.Lock()
 def update_job_status(session_id: str, status: dict):
-    job_status[session_id] = status
-    if len(job_status) > 1000:
-        job_status.pop(next(iter(job_status)))
+    with job_status_lock:
+        job_status[session_id] = status
+        if len(job_status) > 1000:
+            job_status.pop(next(iter(job_status)))
 
 def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: str, is_temp_file: bool = True):
     try:
@@ -371,13 +379,15 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
                     )
             except Exception as e:
                 import traceback
-                with open("DUMP_ERROR.txt", "w") as errf:
+                dump_name = f"DUMP_ERROR_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+                dump_path = os.path.join(_session_dir(result["session_id"]), dump_name)
+                with open(dump_path, "w") as errf:
                     errf.write(traceback.format_exc())
-                logger.error(f"Failed to save detection_meta: {e}")
+                logger.error("Failed to save detection_meta: %s", e)
 
         update_job_status(session_id, {"status": "completed", "progress": 100, "result": result})
     except Exception as e:
-        logger.error(f"Background job failed: {str(e)}")
+        logger.error("Background job failed: %s", e)
         update_job_status(session_id, {"status": "error", "error": str(e)})
     finally:
         if is_temp_file and temp_file_path and os.path.exists(temp_file_path):
@@ -386,7 +396,11 @@ def process_background_job(session_id: str, df: pl.DataFrame, temp_file_path: st
 @app.get("/api/status/{session_id}", dependencies=[Depends(require_api_key)])
 @limiter.limit("120/minute")
 def get_status(request: Request, session_id: str):
-    if session_id not in job_status:
+    with job_status_lock:
+        in_job_status = session_id in job_status
+        current_status = job_status.get(session_id)
+        
+    if not in_job_status:
         try:
             validate_session_id(session_id)
             meta_path = os.path.join(_session_dir(session_id), "detection_meta.json")
@@ -408,7 +422,7 @@ def get_status(request: Request, session_id: str):
             pass
             
         return JSONResponse(status_code=404, content={"error": "Session/Job not found"})
-    return job_status[session_id]
+    return current_status
 
 
 # ── SMART UPLOAD ENDPOINT ────────────────────────────────────────────────────
@@ -527,17 +541,18 @@ async def upload_csv(
                         if jaccard_sim >= 0.75:
                             dataset_status = "updated"
                             active_session_id = session_id
-                            logger.info(f"Smart Upload: Schema similarity {jaccard_sim:.2f}. Updating session {active_session_id}.")
+                            logger.info("Smart Upload: Schema similarity %.2f. Updating session %s.", jaccard_sim, active_session_id)
                         else:
                             dataset_status = "new"
-                            logger.info(f"Smart Upload: Schema similarity {jaccard_sim:.2f}. Pivot detected. Purging old session.")
+                            logger.info("Smart Upload: Schema similarity %.2f. Pivot detected. Purging old session.", jaccard_sim)
                             # Wipe the old session to prevent contamination
                             shutil.rmtree(session_dir, ignore_errors=True)
-                            if session_id in job_status:
-                                del job_status[session_id]
+                            with job_status_lock:
+                                if session_id in job_status:
+                                    del job_status[session_id]
                             # active_session_id remains the newly generated UUID
             except Exception as e:
-                logger.warning(f"Schema comparison failed: {e}")
+                logger.warning("Schema comparison failed: %s", e)
 
         # ── DISPATCH BACKGROUND JOB ──────────────────────────────────────────
         update_job_status(active_session_id, {"status": "started", "progress": 0})
@@ -822,7 +837,7 @@ def download_report_pdf(request: Request, session_id: str):
     except ImportError:
         return JSONResponse(status_code=500, content={"error": "reportlab not installed."})
     except Exception as e:
-        logger.error(f"PDF generation failed: {e}")
+        logger.error("PDF generation failed: %s", e)
         return JSONResponse(status_code=500, content={"error": "Failed to generate PDF."})
 
 
@@ -932,7 +947,29 @@ def confirm_edit(request: Request, session_id: str, sql_query: str = Query(...))
     result = confirm_and_execute_edit(session_id, sql_query)
     if "error" in result:
         return JSONResponse(status_code=400, content=result)
+        
+    # --- RAG Upsert Hook ---
+    try:
+        sess_dir = _session_dir(session_id)
+        ctx_path = os.path.join(sess_dir, "last_remediation_context.json")
+        if os.path.exists(ctx_path):
+            with open(ctx_path, "r") as f:
+                ctx = json.load(f)
+                upsert_approved_fix(
+                    sql=sql_query,
+                    diagnostic_context=ctx.get("diagnostic_reasoning", ""),
+                    schema=ctx.get("schema", ""),
+                    session_id=session_id
+                )
+    except Exception as e:
+        logger.error("Failed to upsert RAG fix: %s", e)
+        
     return result
+
+@app.get("/api/rag-stats", dependencies=[Depends(require_api_key)])
+@limiter.limit("20/minute")
+def get_rag_statistics(request: Request):
+    return get_rag_stats()
 
 
 @app.get("/api/samples")  

@@ -85,10 +85,12 @@ async def execute_natural_query_stream(session_id: str, user_query: str, is_edit
     config_path = os.path.join(session_dir, "db_config.json")
     is_live_db = os.path.exists(config_path)
     db_uri = None
-    
     if is_live_db:
         with open(config_path, "r") as f:
-            db_uri = json.load(f).get("db_uri")
+            db_uri = json.load(f).get("db_uri", "")
+        if not re.match(r"^postgres(?:ql)?://\S+$", db_uri) or "'" in db_uri or ";" in db_uri:
+            yield f"data: {json.dumps({'error': 'Invalid database URI format.'})}\n\n"
+            return
         yield f"data: {json.dumps({'status': 'Establishing secure connection to PostgreSQL...'})}\n\n"
     else:
         cleaned_path = f"{session_dir}/cleaned_data.parquet"
@@ -169,40 +171,113 @@ CRITICAL EXECUTION RULES:
         messages.extend(_get_chat_history(session_dir))
         messages.append({"role": "user", "content": user_query})
 
-        last_error = None
-        sql_query = ""
-        
-        # ── GODMODE UPGRADE: 3-Strike Self Healing Loop ──
-        MAX_ATTEMPTS = 3 
-
-        for attempt in range(MAX_ATTEMPTS):
-            raw_response = groq_chat(
-                messages=messages,
-                model=MODEL_REASONING,
-                temperature=0.1 if attempt == 0 else 0.4, # Increase creativity if stuck
-                max_tokens=4096,
-                timeout=20,
-            )
-
-            if raw_response is None:
-                yield f"data: {json.dumps({'error': 'Compute cluster timeout. Groq LPU unavailable.'})}\n\n"
-                return
-
-            sql_query = _sanitize_llm_sql(raw_response)
-            sql_query = _force_try_cast(sql_query)
-
-            logger.info("SQL Attempt %d: %s", attempt + 1, sql_query)
-            yield f"data: {json.dumps({'status': f'Executing Analytical Engine (Attempt {attempt + 1}/{MAX_ATTEMPTS})...', 'sql': sql_query})}\n\n"
+        if is_edit:
+            yield f"data: {json.dumps({'status': 'Drafting candidate modifications in parallel...'})}\n\n"
             await asyncio.sleep(0.1)
 
-            if is_edit:
-                upper = sql_query.strip().upper()
-                if not upper.startswith("UPDATE") and not upper.startswith("DELETE"):
-                    yield f"data: {json.dumps({'error': f'Aborted: Execution block required UPDATE/DELETE, got: {sql_query[:50]}...'})}\n\n"
-                    return
-                yield f"data: {json.dumps({'status': 'Complete', 'sql': sql_query})}\n\n"
+            async def draft_query(temp: float) -> str | None:
+                return await asyncio.to_thread(
+                    groq_chat,
+                    messages=messages,
+                    model=MODEL_REASONING,
+                    temperature=temp,
+                    max_tokens=4096,
+                    timeout=20,
+                )
+            
+            # Draft 3 queries in parallel
+            raw_responses = await asyncio.gather(
+                draft_query(0.1), draft_query(0.4), draft_query(0.7)
+            )
+
+            yield f"data: {json.dumps({'status': 'Testing strategies in memory sandbox...'})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            valid_sqls = []
+            for raw in raw_responses:
+                if raw:
+                    sql = _sanitize_llm_sql(raw)
+                    sql = _force_try_cast(sql)
+                    upper = sql.strip().upper()
+                    if upper.startswith("UPDATE") or upper.startswith("DELETE"):
+                        valid_sqls.append(sql)
+
+            if not valid_sqls:
+                yield f"data: {json.dumps({'error': 'Compute cluster failed to generate valid UPDATE/DELETE statements.'})}\n\n"
+                return
+
+            best_sql = None
+            max_affected = -1
+            best_error = "No valid statements."
+            
+            for sql in valid_sqls:
+                con = None
+                try:
+                    con = duckdb.connect()
+                    con.execute("PRAGMA threads=2;")
+                    con.execute("PRAGMA max_memory='2GB';")
+                    if is_live_db:
+                        con.execute("INSTALL postgres; LOAD postgres;")
+                        con.execute(f"ATTACH '{db_uri}' AS live_db (TYPE POSTGRES);")
+                        con.execute("USE live_db;")
+                        con.execute("BEGIN TRANSACTION;")
+                        if sql.upper().strip().endswith("RETURNING *"):
+                            affected_df = con.query(sql).pl()
+                        else:
+                            affected_df = con.query(sql + " RETURNING *").pl()
+                        rows_affected = len(affected_df)
+                        con.execute("ROLLBACK;")
+                    else:
+                        con.execute(f"CREATE TABLE my_table AS SELECT * FROM '{data_path}'")
+                        if sql.upper().strip().endswith("RETURNING *"):
+                            affected_df = con.query(sql).pl()
+                        else:
+                            affected_df = con.query(sql + " RETURNING *").pl()
+                        rows_affected = len(affected_df)
+
+                    if rows_affected > max_affected:
+                        max_affected = rows_affected
+                        best_sql = sql
+                except Exception as e:
+                    logger.warning("Sandbox evaluation failed for sql: %s. Error: %s", sql, e)
+                    best_error = str(e)
+                finally:
+                    if con:
+                        con.close()
+            
+            if best_sql:
+                yield f"data: {json.dumps({'status': 'Complete', 'sql': best_sql})}\n\n"
                 return
             else:
+                yield f"data: {json.dumps({'error': f'All candidate strategies failed. Last Engine Error: {best_error}'})}\n\n"
+                return
+        else:
+            last_error = None
+            sql_query = ""
+            
+            # ── GODMODE UPGRADE: 3-Strike Self Healing Loop ──
+            MAX_ATTEMPTS = 3 
+
+            for attempt in range(MAX_ATTEMPTS):
+                raw_response = groq_chat(
+                    messages=messages,
+                    model=MODEL_REASONING,
+                    temperature=0.1 if attempt == 0 else 0.4, # Increase creativity if stuck
+                    max_tokens=4096,
+                    timeout=20,
+                )
+
+                if raw_response is None:
+                    yield f"data: {json.dumps({'error': 'Compute cluster timeout. Groq LPU unavailable.'})}\n\n"
+                    return
+
+                sql_query = _sanitize_llm_sql(raw_response)
+                sql_query = _force_try_cast(sql_query)
+
+                logger.info("SQL Attempt %d: %s", attempt + 1, sql_query)
+                yield f"data: {json.dumps({'status': f'Executing Analytical Engine (Attempt {attempt + 1}/{MAX_ATTEMPTS})...', 'sql': sql_query})}\n\n"
+                await asyncio.sleep(0.1)
+
                 upper = sql_query.strip().upper()
                 if not upper.startswith("SELECT") and not upper.startswith("WITH"):
                     yield f"data: {json.dumps({'error': f'Aborted: Execution block required SELECT/WITH, got: {sql_query[:50]}...'})}\n\n"
@@ -225,7 +300,7 @@ CRITICAL EXECUTION RULES:
                     result_df = con.query(sql_query).pl()
                     
                     # ── Semantic Reflection ──
-                    if len(result_df) == 0 and attempt == 0 and not is_edit:
+                    if len(result_df) == 0 and attempt == 0:
                         logger.info("0 Rows Returned. Triggering Semantic Reflection...")
                         yield f"data: {json.dumps({'status': 'Optimization: 0 rows matched. Broadening search parameters...'})}\n\n"
                         messages.append({"role": "assistant", "content": raw_response})
@@ -289,7 +364,7 @@ Generate exactly 3 analytical follow-up questions to dig deeper. Return ONLY a v
                     if con:
                         con.close()
 
-        yield f"data: {json.dumps({'error': f'Irrecoverable query error. Last SQL: {sql_query}'})}\n\n"
+            yield f"data: {json.dumps({'error': f'Irrecoverable query error. Last SQL: {sql_query}'})}\n\n"
 
     except Exception as e:
         yield f"data: {json.dumps({'error': f'System Fault: {str(e)}'})}\n\n"
@@ -307,7 +382,9 @@ def confirm_and_execute_edit(session_id: str, sql_query: str):
     db_uri = None
     if is_live_db:
         with open(config_path, "r") as f:
-            db_uri = json.load(f).get("db_uri")
+            db_uri = json.load(f).get("db_uri", "")
+        if not re.match(r"^postgres(?:ql)?://\S+$", db_uri) or "'" in db_uri or ";" in db_uri:
+            return {"error": "Invalid database URI format."}
 
     con = None
     try:
@@ -321,7 +398,12 @@ def confirm_and_execute_edit(session_id: str, sql_query: str):
             con.execute(f"ATTACH '{db_uri}' AS live_db (TYPE POSTGRES);")
             con.execute("USE live_db;")
         else:
-            con.execute(f"CREATE TABLE my_table AS SELECT * FROM '{data_path}'")
+            # We add original_index to allow targeted row-level updates from the Remediation Orchestrator
+            con.execute(f"CREATE TABLE my_table AS SELECT *, row_number() OVER () - 1 AS original_index FROM '{data_path}'")
+
+            # DEBUG LOG
+            schema_df = con.query("PRAGMA table_info('my_table')").pl()
+            logger.info("DEBUG: my_table columns: %s", schema_df["name"].to_list())
 
         clean_sql = sql_query.strip().rstrip(";")
         clean_sql = _force_try_cast(clean_sql)
@@ -348,6 +430,7 @@ def confirm_and_execute_edit(session_id: str, sql_query: str):
                 rows_affected = 0 
 
             if not is_live_db:
+                con.execute("ALTER TABLE my_table DROP COLUMN IF EXISTS original_index")
                 con.execute(f"COPY my_table TO '{data_path}' (FORMAT PARQUET)")
                 preview_df = con.query("SELECT * FROM my_table LIMIT 50").pl()
             else:
@@ -376,6 +459,17 @@ def confirm_and_execute_edit(session_id: str, sql_query: str):
                 affected_df = con.query("SELECT * FROM my_table LIMIT 50").pl() if not is_live_db else pl.DataFrame()
 
             if not is_live_db:
+                if "is_anomaly" in con.execute("DESCRIBE my_table").pl()["column_name"].to_list():
+                    try:
+                        if "original_index" in affected_df.columns:
+                            affected_indices = affected_df["original_index"].to_list()
+                            if affected_indices:
+                                indices_str = ", ".join(map(str, affected_indices))
+                                con.execute(f"UPDATE my_table SET is_anomaly = false WHERE original_index IN ({indices_str})")
+                    except Exception as e:
+                        logger.warning("Failed to clear is_anomaly flag: %s", e)
+                
+                con.execute("ALTER TABLE my_table DROP COLUMN IF EXISTS original_index")
                 con.execute(f"COPY my_table TO '{data_path}' (FORMAT PARQUET)")
 
             log_audit_action(session_id, "User confirmed UPDATE execution", clean_sql, rows_affected, "success")
@@ -401,7 +495,6 @@ def confirm_and_execute_edit(session_id: str, sql_query: str):
             con.close()
 
 def _get_business_context(user_query: str) -> str:
-    import json
     dict_path = os.path.join(_BACKEND_DIR, "data", "business_dictionary.json")
     if not os.path.exists(dict_path):
         return ""

@@ -165,9 +165,9 @@ def evaluate_lineage_drift(df: pd.DataFrame, numeric_cols: list[str]) -> dict:
             # (either spikes, or drops because the topology collapsed and became simpler)
             if abs(current_structural_error - baseline_error) / max(baseline_error, 1e-5) > 0.10:
                 drift_detected = True
-                logger.warning(f"LINEAGE DRIFT DETECTED: Upstream topology collapsed! (Error: {current_structural_error:.4f} vs Baseline: {baseline_error:.4f})")
+                logger.warning("LINEAGE DRIFT DETECTED: Upstream topology collapsed! (Error: %.4f vs Baseline: %.4f)", current_structural_error, baseline_error)
         except Exception as e:
-            logger.error(f"Failed to read baseline graph: {e}")
+            logger.error("Failed to read baseline graph: %s", e)
             
     # Save current as new baseline if no baseline exists
     if not os.path.exists(dataset_baseline_path) or baseline_error == 0.0:

@@ -117,5 +117,4 @@ def detect_anomalies_lnn(train_df: pl.DataFrame, score_df: pl.DataFrame, numeric
     return {
         "threat_scores": [float(score) for score in threat_scores],
         "is_anomaly": [bool(flag) for flag in is_anomaly],
-        "reconstruction_errors": [float(mse) for mse in row_mse]
-    }
+    }

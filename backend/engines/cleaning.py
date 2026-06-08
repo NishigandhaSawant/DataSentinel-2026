@@ -116,7 +116,6 @@ def _anomaly_mask(df: pl.DataFrame) -> pl.Series:
 
 def _build_cols_to_drop(df: pl.DataFrame) -> list[str]:
     """Collect internal/engineered column names that should be stripped on export."""
-    present = set(df.columns)
     return [
         c for c in df.columns
         if c in _ALWAYS_DROP
@@ -414,6 +413,18 @@ def clean_dataset(session_id: str, action: str = "drop") -> dict:
         "Cleaning | session=%s action=%s rows=%d", session_id, action, original_count
     )
 
+    # ── GDPR PII SCRUB (all rows, all PII cols) ──
+    pii_cols = _detect_pii_columns(df.columns)
+    if pii_cols:
+        logger.info(
+            "PII scrubber: pseudonymising %d column(s): %s", len(pii_cols), pii_cols
+        )
+        try:
+            df = _scrub_pii(df, pii_cols)
+        except Exception as e:
+            logger.error("PII scrubbing failed: %s", e, exc_info=True)
+            return {"error": f"PII scrubbing failed: {e}"}
+
     # ── DISPATCH ──
     try:
         if action == "impute":
@@ -436,18 +447,6 @@ def clean_dataset(session_id: str, action: str = "drop") -> dict:
         logger.warning(
             "Cleaning produced an empty DataFrame — were all rows anomalous?"
         )
-
-    # ── GDPR PII SCRUB (all rows, all PII cols) ──
-    pii_cols = _detect_pii_columns(cleaned_df.columns)
-    if pii_cols:
-        logger.info(
-            "PII scrubber: pseudonymising %d column(s): %s", len(pii_cols), pii_cols
-        )
-        try:
-            cleaned_df = _scrub_pii(cleaned_df, pii_cols)
-        except Exception as e:
-            logger.error("PII scrubbing failed: %s", e, exc_info=True)
-            return {"error": f"PII scrubbing failed: {e}"}
 
     # ── STRIP INTERNAL / ENGINEERED COLUMNS ──
     cols_to_drop = _build_cols_to_drop(cleaned_df)

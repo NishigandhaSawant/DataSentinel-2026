@@ -145,7 +145,7 @@ def apply_rl_cleaning(df: pl.DataFrame, session_id: str) -> dict:
         state = agent.get_state(pandas_df[col])
         action = agent.choose_action(state)
         
-        logger.info(f"RL Agent resolving '{col}' (State: {state}) -> Action: {action_map[action]}")
+        logger.info("RL Agent resolving '%s' (State: %s) -> Action: %s", col, state, action_map[action])
         
         original_series = pandas_df[col].copy()
         
@@ -175,7 +175,7 @@ def apply_rl_cleaning(df: pl.DataFrame, session_id: str) -> dict:
             "reward": round(reward, 4)
         }
         
-    logger.info(f"RL Remediation Complete. Total Episode Reward: {total_reward:.4f}")
+    logger.info("RL Remediation Complete. Total Episode Reward: %.4f", total_reward)
     
     return {
         "cleaned_df": pl.from_pandas(pandas_df),

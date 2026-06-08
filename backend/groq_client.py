@@ -9,7 +9,6 @@ import json
 import requests
 from utils import logger
 
-_GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # Model roster — tuned for each engine's needs
@@ -32,13 +31,15 @@ def groq_chat(
 
     Returns the assistant's response text, or None on failure.
     All errors are logged but never raised — callers should handle None gracefully.
+    Includes automatic retry with exponential backoff for HTTP 429 rate-limit errors.
     """
-    if not _GROQ_API_KEY:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
         logger.warning("GROQ_API_KEY not set. AI features are disabled.")
         return None
 
     headers = {
-        "Authorization": f"Bearer {_GROQ_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -52,27 +53,38 @@ def groq_chat(
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
-    try:
-        response = requests.post(
-            _GROQ_URL, headers=headers, json=payload, timeout=timeout
-        )
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                _GROQ_URL, headers=headers, json=payload, timeout=timeout
+            )
 
-        if response.status_code == 200:
-            content = response.json()["choices"][0]["message"]["content"]
-            return content.strip()
-        else:
-            logger.error("Groq API %d: %s", response.status_code, response.text[:300])
+            if response.status_code == 200:
+                content = response.json()["choices"][0]["message"]["content"]
+                return content.strip()
+            elif response.status_code == 429 and attempt < max_retries:
+                # Rate limited — backoff and retry
+                import time
+                wait = 2 ** (attempt + 1)  # 2s, 4s
+                logger.warning("Groq API 429 rate-limited. Retrying in %ds (attempt %d/%d)...", wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
+            else:
+                logger.error("Groq API %d: %s", response.status_code, response.text[:300])
+                return None
+
+        except requests.exceptions.Timeout:
+            logger.warning("Groq API request timed out after %ds.", timeout)
+            return None
+        except requests.exceptions.ConnectionError:
+            logger.warning("Groq API connection failed. Check network connectivity.")
+            return None
+        except Exception as e:
+            logger.error("Groq client unexpected error: %s", e)
             return None
 
-    except requests.exceptions.Timeout:
-        logger.warning("Groq API request timed out after %ds.", timeout)
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.warning("Groq API connection failed. Check network connectivity.")
-        return None
-    except Exception as e:
-        logger.error("Groq client unexpected error: %s", e)
-        return None
+    return None
 
 
 def groq_chat_json(
@@ -104,13 +116,14 @@ def groq_chat_json(
 
 def check_groq_connectivity() -> bool:
     """Quick connectivity check — sends a minimal request to verify API key + network."""
-    if not _GROQ_API_KEY:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
         return False
     try:
         resp = requests.post(
             _GROQ_URL,
             headers={
-                "Authorization": f"Bearer {_GROQ_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
