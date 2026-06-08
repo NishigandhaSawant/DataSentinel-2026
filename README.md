@@ -9,6 +9,14 @@
   <img src="https://img.shields.io/badge/Three.js-0.183-000000?style=for-the-badge&logo=three.js&logoColor=white" />
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/github/last-commit/GhoshChinmay/DSV2?style=for-the-badge&color=4F46E5&label=Last%20Commit" />
+  <img src="https://img.shields.io/github/repo-size/GhoshChinmay/DSV2?style=for-the-badge&color=EC4899&label=Repo%20Size" />
+  <img src="https://img.shields.io/github/stars/GhoshChinmay/DSV2?style=for-the-badge&color=F59E0B&label=Stars" />
+  <img src="https://img.shields.io/github/issues/GhoshChinmay/DSV2?style=for-the-badge&color=10B981&label=Issues" />
+  <img src="https://img.shields.io/badge/License-Portfolio-8B5CF6?style=for-the-badge" />
+</p>
+
 <h1 align="center">🛡️ DataSentinel</h1>
 
 <p align="center">
@@ -28,6 +36,23 @@
   <a href="#-security-model">Security</a> •
   <a href="#-environment-variables">Environment</a>
 </p>
+
+---
+
+## 🎯 Portfolio Highlights
+
+> **For recruiters & hiring managers** — here's what this project demonstrates at a glance.
+
+| Skill Area | What's Demonstrated |
+|---|---|
+| 🤖 **Multi-Agent AI Design** | 5 anomaly detection models running in parallel via `ThreadPoolExecutor` with ensemble voting |
+| 🧠 **LLM Integration** | Groq (Llama 3.3 70B) used for SQL generation, neuro-symbolic rule synthesis, and narrative insights |
+| 📐 **ML Engineering** | SHAP explainability, XGBoost threat scoring, DiCE counterfactuals, NOTEARS causal DAG |
+| 🔁 **Reinforcement Learning** | Q-Learning agent (`rl_cleaner.py`) selects optimal imputation strategies per anomaly context |
+| 📡 **Full-Stack Engineering** | FastAPI async backend + Next.js 16 App Router + React 19 — production-grade, zero `any` TypeScript |
+| 🗄️ **Data Engineering** | Polars DataFrames, DuckDB in-process SQL, Parquet session storage, streaming `io.BytesIO` exports |
+| 🔒 **Security & Compliance** | PII scanning, SHA-256 pseudonymisation, SOC2-ready immutable audit trail, rate limiting |
+| 🎬 **UI/UX Engineering** | Three.js particle scenes, GSAP scroll animations, Lenis smooth scroll, Framer Motion transitions |
 
 ---
 
@@ -54,6 +79,27 @@ DataSentinel is an advanced, AI-driven data quality and anomaly detection platfo
 | 🚀 **High Throughput** | In-Memory Streaming | Optimized streaming responses (`io.BytesIO`) for heavy dataset exports to prevent I/O bottlenecks |
 | 🔒 **Audit Trail** | SOC2-Ready Logging | Immutable JSONL audit trail of every AI-driven data mutation for compliance |
 | 🎬 **Cinematic UI** | Premium Experience | GSAP scroll-driven animations, Three.js particle simulations, Lenis smooth scrolling |
+
+---
+
+## 🆚 Why DataSentinel?
+
+Most data quality tools stop at rule checking or basic profiling. DataSentinel is an **end-to-end autonomous pipeline** with capabilities that go significantly further:
+
+| Feature | DataSentinel | Great Expectations | Pandas Profiling | AWS Glue DataBrew |
+|---|:---:|:---:|:---:|:---:|
+| LLM-Generated Validation Rules | ✅ | ❌ | ❌ | ❌ |
+| Causal Root Cause (NOTEARS DAG) | ✅ | ❌ | ❌ | ❌ |
+| RL-Based Smart Cleaning Agent | ✅ | ❌ | ❌ | ❌ |
+| Natural Language → SQL Chat | ✅ | ❌ | ❌ | ⚠️ Limited |
+| SHAP Per-Row Explainability | ✅ | ❌ | ❌ | ❌ |
+| DiCE Counterfactual Recommendations | ✅ | ❌ | ❌ | ❌ |
+| Active Learning Trust Calibration | ✅ | ❌ | ❌ | ❌ |
+| PII Vaulting (GDPR-ready) | ✅ | ❌ | ❌ | ⚠️ Partial |
+| Drift Detection (Graph AutoEncoder) | ✅ | ⚠️ Partial | ❌ | ❌ |
+| Immutable SOC2 Audit Trail | ✅ | ⚠️ Partial | ❌ | ✅ |
+| Local / Self-Hosted | ✅ | ✅ | ✅ | ❌ (Cloud-only) |
+| Open Source | ✅ | ✅ | ✅ | ❌ |
 
 ---
 
@@ -256,6 +302,51 @@ graph TD
 > - **Causal RCA** uses continuous DAG optimization (NOTEARS) instead of marginal SHAP for true root cause tracing
 > - **Active Learning** dynamically adjusts the Human Trust Score based on operator feedback loops
 > - All session data is stored as **Parquet** files with **Joblib**-cached models for instant reload
+
+<details>
+<summary>🔬 <strong>AI Engine Deep Dive — How Each Model Works (Click to expand)</strong></summary>
+
+<br/>
+
+### Anomaly Detection (5 Parallel Models)
+
+| Model | File | How It Works |
+|---|---|---|
+| **Isolation Forest** | `detection.py` | Randomly partitions feature space; anomalies require fewer splits to isolate — yielding a low path-length score |
+| **LSTM Autoencoder** | `detection.py` | Learns normal sequential patterns from numeric columns; rows with high reconstruction error are flagged as anomalies |
+| **ECOD** | `detection.py` | Empirical Cumulative Distribution outlier detection — no distribution assumptions, robust to skewed data |
+| **LOF** | `detection.py` | Local Outlier Factor compares each point's local density to its neighbors — catches cluster-edge outliers IF misses |
+| **LNN** | `neuro_symbolic.py` | Logical Neural Network that enforces domain-specific constraints (e.g. `age > 0`, `revenue ≥ cost`) as soft logic gates |
+
+All 5 models vote → results are **ensemble-aggregated** → passed to **XGBoost** (hist booster) for a final normalized threat score (0.0 – 1.0).
+
+### Explainability & Causal Reasoning
+
+| Component | File | How It Works |
+|---|---|---|
+| **SHAP** | `detection.py` | TreeExplainer computes per-row, per-feature attribution values — tells you *which* columns drove a specific anomaly score |
+| **NOTEARS DAG** | `causal_rca.py` | Continuous optimization discovers a directed acyclic graph of column relationships — identifies root causes, not just symptoms |
+| **DiCE** | `detection.py` | Generates counterfactual examples: "If `age` were 34 instead of 134, this row would be normal" — actionable remediation |
+
+### Adaptive Intelligence
+
+| Component | File | How It Works |
+|---|---|---|
+| **RL Cleaner** | `rl_cleaner.py` | Tabular Q-Learning agent learns which cleaning action (drop / winsorize / KNN impute / mask) minimizes data quality loss per anomaly type |
+| **Active Learning** | `active_learning.py` | Uncertainty sampling selects the most ambiguous anomalies for human review; operator feedback updates a Human Trust Score that re-weights ensemble votes |
+| **Lineage GAE** | `lineage_gae.py` | Graph AutoEncoder models column-to-column relationships; drift in the learned graph embeddings signals schema or distribution shift |
+| **Neuro-Symbolic** | `logic_gate.py` | Sends dataset schema + sample rows to Groq LLM → LLM returns Python/Polars validation expressions → compiled and executed as hard constraints |
+
+### Agentic Query Engine
+
+| Component | File | How It Works |
+|---|---|---|
+| **NL → SQL** | `query.py` | User's natural language question + RAG business dictionary context → Groq generates DuckDB-compatible SQL |
+| **Self-Healing** | `query.py` | If DuckDB raises an error, the engine sends the error back to Groq for automatic SQL correction (up to 3 retries) |
+| **Vector RAG** | `vector_rag.py` | TF-IDF + SVD vectorizes the business dictionary; cosine similarity retrieves relevant domain terms to ground SQL generation |
+| **SSE Streaming** | `main.py` | Query results stream token-by-token to the frontend via Server-Sent Events — no waiting for full response |
+
+</details>
 
 ---
 
