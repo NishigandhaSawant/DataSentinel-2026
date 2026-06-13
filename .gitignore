@@ -87,4 +87,5 @@ htmlcov/
 
 # AI export artifacts
 DataSentinel-ai-export.zip
+DataSentinel-ai-bundle.txt
 _ai_export/

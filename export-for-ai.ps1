@@ -1,16 +1,21 @@
-# export-for-ai.ps1
-# Creates a lean zip of DataSentinel optimized for AI analysis.
-# Run from project root: powershell -ExecutionPolicy Bypass -File .\export-for-ai.ps1
+<#
+.SYNOPSIS
+    Bundles all source code into a single text file for AI upload.
+    Works with Gemini, Claude, ChatGPT — no zip parsing needed.
+
+.DESCRIPTION
+    Run from the project root:
+        powershell -ExecutionPolicy Bypass -File .\export-for-ai.ps1
+
+    Output: DataSentinel-ai-bundle.txt (single file, paste-friendly)
+#>
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$exportDir   = Join-Path $projectRoot "_ai_export"
-$zipName     = "DataSentinel-ai-export.zip"
-$zipPath     = Join-Path $projectRoot $zipName
+$outputFile  = Join-Path $projectRoot "DataSentinel-ai-bundle.txt"
 
-# Clean up previous exports
-if (Test-Path $exportDir) { Remove-Item $exportDir -Recurse -Force }
-if (Test-Path $zipPath)   { Remove-Item $zipPath -Force }
+# Clean previous output
+if (Test-Path $outputFile) { Remove-Item $outputFile -Force }
 
 Write-Host ""
 Write-Host "Gathering source files..." -ForegroundColor Cyan
@@ -18,7 +23,7 @@ Write-Host "Gathering source files..." -ForegroundColor Cyan
 # Get all git-tracked files
 $allFiles = git -C $projectRoot ls-files
 
-# Exclusion patterns
+# Exclusion patterns - files that waste AI tokens
 $excludePatterns = @(
     '\.png$',
     '\.jpg$',
@@ -33,7 +38,8 @@ $excludePatterns = @(
     '\.pdf$',
     'package-lock\.json$',
     '\.tsbuildinfo$',
-    'next-env\.d\.ts$'
+    'next-env\.d\.ts$',
+    'export-for-ai\.ps1$'
 )
 
 $includedFiles = [System.Collections.ArrayList]@()
@@ -65,34 +71,63 @@ if ($excCount -gt 0) {
     }
 }
 
-# Copy included files preserving directory structure
+# Build the single-file bundle
+$header = @"
+================================================================================
+DATASENTINEL - AI CODE BUNDLE
+Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Files: $incCount source files
+================================================================================
+
+This file contains the entire DataSentinel source code concatenated into a
+single text file for AI analysis. Each file is delimited by markers.
+
+Read CLAUDE.md (included below) first for a project overview.
+
+TABLE OF CONTENTS:
+$( ($includedFiles | ForEach-Object { "  - $_" }) -join "`n" )
+
+================================================================================
+
+"@
+
+Set-Content -Path $outputFile -Value $header -Encoding UTF8
+
 foreach ($file in $includedFiles) {
-    $src = Join-Path $projectRoot $file
-    $dst = Join-Path $exportDir $file
-    $dstDir = Split-Path $dst -Parent
-    if (-not (Test-Path $dstDir)) {
-        New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
+    $filePath = Join-Path $projectRoot $file
+    $separator = "=" * 80
+    $fileHeader = @"
+
+$separator
+FILE: $file
+$separator
+
+"@
+    Add-Content -Path $outputFile -Value $fileHeader -Encoding UTF8
+
+    try {
+        $content = Get-Content -Path $filePath -Raw -Encoding UTF8
+        Add-Content -Path $outputFile -Value $content -Encoding UTF8
+    } catch {
+        Add-Content -Path $outputFile -Value "[Binary or unreadable file - skipped]" -Encoding UTF8
     }
-    Copy-Item $src $dst
 }
 
-# Calculate total size
-$totalBytes = 0
-Get-ChildItem $exportDir -Recurse -File | ForEach-Object { $totalBytes += $_.Length }
-$sizeMB = [math]::Round($totalBytes / 1MB, 2)
-$sizeKB = [math]::Round($totalBytes / 1KB, 0)
-Write-Host ""
-Write-Host "Total export size: $sizeKB KB ($sizeMB MB uncompressed)" -ForegroundColor Cyan
+# Add footer
+$footer = @"
 
-# Create zip
-Compress-Archive -Path (Join-Path $exportDir "*") -DestinationPath $zipPath -Force
+================================================================================
+END OF DATASENTINEL AI CODE BUNDLE
+================================================================================
+"@
+Add-Content -Path $outputFile -Value $footer -Encoding UTF8
 
-$zipSizeKB = [math]::Round((Get-Item $zipPath).Length / 1KB, 0)
-Write-Host "Created: $zipName ($zipSizeKB KB compressed)" -ForegroundColor Green
-
-# Cleanup temp directory
-Remove-Item $exportDir -Recurse -Force
+# Stats
+$totalSize = (Get-Item $outputFile).Length
+$sizeKB = [math]::Round($totalSize / 1KB, 0)
+$sizeMB = [math]::Round($totalSize / 1MB, 2)
 
 Write-Host ""
-Write-Host "Upload '$zipName' to Claude, Gemini, or ChatGPT for analysis." -ForegroundColor Magenta
+Write-Host "Bundle created: DataSentinel-ai-bundle.txt ($sizeKB KB / $sizeMB MB)" -ForegroundColor Green
+Write-Host "Upload this single .txt file to Gemini, Claude, or ChatGPT." -ForegroundColor Magenta
 Write-Host ""
