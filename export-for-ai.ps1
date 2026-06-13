@@ -1,14 +1,6 @@
-<#
-.SYNOPSIS
-    Bundles all source code into a single text file for AI upload.
-    Works with Gemini, Claude, ChatGPT — no zip parsing needed.
-
-.DESCRIPTION
-    Run from the project root:
-        powershell -ExecutionPolicy Bypass -File .\export-for-ai.ps1
-
-    Output: DataSentinel-ai-bundle.txt (single file, paste-friendly)
-#>
+# export-for-ai.ps1
+# Creates a single .txt bundle of all DataSentinel source code for AI upload.
+# Run from project root: powershell -ExecutionPolicy Bypass -File .\export-for-ai.ps1
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -82,7 +74,7 @@ Files: $incCount source files
 This file contains the entire DataSentinel source code concatenated into a
 single text file for AI analysis. Each file is delimited by markers.
 
-Read CLAUDE.md (included below) first for a project overview.
+Read CLAUDE.md (included below) first for a complete project overview.
 
 TABLE OF CONTENTS:
 $( ($includedFiles | ForEach-Object { "  - $_" }) -join "`n" )
