@@ -1,0 +1,35 @@
+# =============================================================================
+# .gitattributes — Controls GitHub "Download ZIP" exports
+# Files marked with `export-ignore` are EXCLUDED from the zip download
+# but remain tracked in git normally.
+# =============================================================================
+
+# --- Lock files (auto-generated, no analytical value) ---
+frontend/package-lock.json    export-ignore
+
+# --- Binary assets (waste AI tokens, can't be analyzed as text) ---
+public/architecture.png       export-ignore
+frontend/src/app/favicon.ico  export-ignore
+*.png                         export-ignore
+*.ico                         export-ignore
+*.jpg                         export-ignore
+*.jpeg                        export-ignore
+*.svg                         export-ignore
+*.gif                         export-ignore
+*.webp                        export-ignore
+
+# --- Test artifacts & config ---
+frontend/test-results/        export-ignore
+backend/tests/                export-ignore
+
+# --- IDE & editor config ---
+.vscode/                      export-ignore
+
+# --- Docker (not needed for code analysis) ---
+# Uncomment if you never need these in the zip:
+# docker-compose.yml          export-ignore
+# backend/Dockerfile          export-ignore
+# frontend/Dockerfile         export-ignore
+
+# --- Large docs (optional — uncomment if README is sufficient) ---
+# public/DataSentinel_Project_Brief.md  export-ignore

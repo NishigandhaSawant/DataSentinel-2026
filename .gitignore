@@ -84,3 +84,7 @@ htmlcov/
 
 # Generated test artifacts
 *.pdf
+
+# AI export artifacts
+DataSentinel-ai-export.zip
+_ai_export/
