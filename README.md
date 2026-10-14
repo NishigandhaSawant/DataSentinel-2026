@@ -10,10 +10,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/last-commit/GhoshChinmay/DSV2?style=for-the-badge&color=4F46E5&label=Last%20Commit" />
-  <img src="https://img.shields.io/github/repo-size/GhoshChinmay/DSV2?style=for-the-badge&color=EC4899&label=Repo%20Size" />
-  <img src="https://img.shields.io/github/stars/GhoshChinmay/DSV2?style=for-the-badge&color=F59E0B&label=Stars" />
-  <img src="https://img.shields.io/github/issues/GhoshChinmay/DSV2?style=for-the-badge&color=10B981&label=Issues" />
+  <img src="https://img.shields.io/github/last-commit/NishigandhaSawant/DataSentinel-2026?style=for-the-badge&color=4F46E5&label=Last%20Commit" />
+  <img src="https://img.shields.io/github/repo-size/NishigandhaSawant/DataSentinel-2026?style=for-the-badge&color=EC4899&label=Repo%20Size" />
+  <img src="https://img.shields.io/github/stars/NishigandhaSawant/DataSentinel-2026?style=for-the-badge&color=F59E0B&label=Stars" />
+  <img src="https://img.shields.io/github/issues/NishigandhaSawant/DataSentinel-2026?style=for-the-badge&color=10B981&label=Issues" />
   <img src="https://img.shields.io/badge/License-Portfolio-8B5CF6?style=for-the-badge" />
 </p>
 
@@ -117,8 +117,8 @@ Most data quality tools stop at rule checking or basic profiling. DataSentinel i
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/GhoshChinmay/DataSentinel.git
-cd DataSentinel
+git clone https://github.com/NishigandhaSawant/DataSentinel-2026.git
+cd DataSentinel-2026
 ```
 
 ### 2. Backend Setup

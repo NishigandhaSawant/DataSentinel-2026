@@ -597,4 +597,4 @@ DataSentinel is not merely a proof of concept; it is a functional product that c
 ---
 
 *DataSentinel — AI-Powered Data Quality Intelligence Platform*
-*GitHub: https://github.com/GhoshChinmay/DataSentinel*
+*GitHub: https://github.com/NishigandhaSawant/DataSentinel-2026*

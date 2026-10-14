@@ -301,8 +301,8 @@ All endpoints at `http://localhost:8000`. Swagger docs at `/docs`.
 
 ```bash
 # 1. Clone
-git clone https://github.com/GhoshChinmay/DataSentinel.git
-cd DataSentinel
+git clone https://github.com/NishigandhaSawant/DataSentinel-2026.git
+cd DataSentinel-2026
 
 # 2. Backend
 cd backend
