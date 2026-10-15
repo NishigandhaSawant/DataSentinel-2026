@@ -72,12 +72,12 @@ CRITICAL RULES:
 1. ONLY apply rules to columns that actually exist in the schema provided.
 2. Ensure values are numeric.
 """
-    from groq_client import groq_chat_json
+    from groq_client import groq_chat_json, MODEL_FAST
 
     try:
         messages = [{"role": "user", "content": prompt}]
         # Temperature 0.0 forces deterministic, repeatable outputs
-        data = groq_chat_json(messages, model="llama-3.1-8b-instant", temperature=0.0)
+        data = groq_chat_json(messages, model=MODEL_FAST, temperature=0.0)
 
         if not data:
             return []

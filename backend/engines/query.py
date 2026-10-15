@@ -17,7 +17,7 @@ import polars as pl
 import duckdb
 
 from utils import _session_dir, logger, _BACKEND_DIR, log_audit_action
-from groq_client import groq_chat, MODEL_REASONING
+from groq_client import groq_chat, MODEL_REASONING, MODEL_FAST
 
 
 def _sanitize_llm_sql(raw_response: str) -> str:
@@ -319,8 +319,7 @@ Resulting columns: {list(result_df.columns)}
 Generate exactly 3 analytical follow-up questions to dig deeper. Return ONLY a valid JSON array of strings."""
 
                     try:
-                        # FIX 1: Upgraded Groq model to 3.1
-                        sugg_response = groq_chat([{"role": "user", "content": suggestion_prompt}], model="llama-3.1-8b-instant", temperature=0.7)
+                        sugg_response = groq_chat([{"role": "user", "content": suggestion_prompt}], model=MODEL_FAST, temperature=0.7)
                         clean_sugg = sugg_response.replace("```json", "").replace("```", "").strip()
                         suggestions = json.loads(clean_sugg)
                     except Exception:

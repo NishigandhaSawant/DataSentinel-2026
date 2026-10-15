@@ -107,6 +107,13 @@ export function SessionProvider({ children, sessionId }: { children: React.React
   //   - beforeunload: stamp a sessionStorage flag AND show the native warning.
   //   - unload: fire a beacon to delete the session server-side.
   //   - Next mount (Step 1 above): detect the flag → redirect to landing page.
+  //
+  // IMPORTANT: beforeunload also fires on Next.js client-side navigations (link
+  // clicks, router.push). To avoid leaving a stale flag that Step 1 would
+  // wrongly treat as a reload, we clear the flag:
+  //   • on pagehide  — covers BFCache restores AND cancelled unloads
+  //   • on popstate  — covers browser back/forward (client-side)
+  //   • on visibilitychange — covers cancelled native reload dialogs
   useEffect(() => {
     const flagKey = reloadFlagKey(sessionId);
 
@@ -126,13 +133,15 @@ export function SessionProvider({ children, sessionId }: { children: React.React
       navigator.sendBeacon(`${API_BASE}/api/session/${sessionId}/delete`);
     };
 
-    // If the user clicks "Stay" on the native dialog, the page does NOT unload.
-    // We clear the flag on pagehide with persisted=true (BFCache) or on
-    // visibilitychange back to visible, so a cancelled reload doesn't leave a
-    // stale flag behind.
+    // pagehide fires on every navigation (including client-side ones in some
+    // browsers). Clear the flag here so it only survives a true hard reload
+    // where the page is actually destroyed and re-created.
+    const handlePageHide = () => {
+      sessionStorage.removeItem(flagKey);
+    };
+
     const handlePageShow = (e: PageTransitionEvent) => {
-      // persisted=false means this is a fresh load (real reload happened) — do nothing.
-      // persisted=true means page came from BFCache (user hit back) — clear flag.
+      // BFCache restore — page came back from cache. Clear flag.
       if (e.persisted) {
         sessionStorage.removeItem(flagKey);
       }
@@ -146,15 +155,24 @@ export function SessionProvider({ children, sessionId }: { children: React.React
       }
     };
 
+    // Clear the flag on client-side route transitions (popstate = back/forward)
+    const handlePopState = () => {
+      sessionStorage.removeItem(flagKey);
+    };
+
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('unload', handleUnload);
+    window.addEventListener('pagehide', handlePageHide);
     window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('popstate', handlePopState);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('unload', handleUnload);
+      window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('popstate', handlePopState);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [sessionId]);
